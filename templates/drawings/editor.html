@@ -1,0 +1,2059 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Editor - {{ project.name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    :root {
+        --bg-sidebar: #ffffff;
+        --bg-canvas: #e0e0e0;
+        --bg-tool-btn: #f8f9fa;
+        --bg-tool-btn-hover: #e9ecef;
+        --bg-tool-btn-active: #3498db;
+        --bg-layer-item: #f8f9fa;
+        --bg-layer-item-hover: #e9ecef;
+        --bg-layer-selected: #d4edda;
+        --border-layer-selected: #28a745;
+        --bg-bottom-toolbar: #ffffff;
+        --bg-zoom-btn: #ffffff;
+        --bg-zoom-btn-hover: #f8f9fa;
+        --bg-status-bar: rgba(0,0,0,0.7);
+        --text-status-bar: #ffffff;
+        --bg-info-panel: #f0f7ff;
+        --border-info-panel: #bee0ff;
+        --bg-warning: #fff3cd;
+        --border-warning: #ffc107;
+        --text-warning: #856404;
+        --bg-asset-adjusted: #fff3cd;
+        --text-required: #dc3545;
+    }
+    [data-theme="dark"] {
+        --bg-sidebar: #16213e;
+        --bg-canvas: #2a2a3a;
+        --bg-tool-btn: #1a1a2e;
+        --bg-tool-btn-hover: #0f3460;
+        --bg-tool-btn-active: #2980b9;
+        --bg-layer-item: #1a1a2e;
+        --bg-layer-item-hover: #0f3460;
+        --bg-layer-selected: #1b3a2a;
+        --border-layer-selected: #66bb6a;
+        --bg-bottom-toolbar: #16213e;
+        --bg-zoom-btn: #1a1a2e;
+        --bg-zoom-btn-hover: #0f3460;
+        --bg-status-bar: rgba(0,0,0,0.8);
+        --text-status-bar: #e0e0e0;
+        --bg-info-panel: #1a2a3e;
+        --border-info-panel: #2a5a8a;
+        --bg-warning: #3a3020;
+        --border-warning: #8a7020;
+        --text-warning: #e0c060;
+        --bg-asset-adjusted: #3a3020;
+        --text-required: #ef5350;
+    }
+
+    /* Hide the full-width navbar on the editor page */
+    .navbar { display: none; }
+
+    .editor-container {
+        display: flex;
+        height: 100vh;
+    }
+
+    /* Modern scrollbar styling for sidebars and inner panels */
+    .sidebar-left,
+    .sidebar-right,
+    .sidebar-left *,
+    .sidebar-right * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(128,128,128,0.3) transparent;
+    }
+    .sidebar-left::-webkit-scrollbar,
+    .sidebar-right::-webkit-scrollbar,
+    .sidebar-left *::-webkit-scrollbar,
+    .sidebar-right *::-webkit-scrollbar {
+        width: 5px;
+        height: 0;
+    }
+    .sidebar-left::-webkit-scrollbar-track,
+    .sidebar-right::-webkit-scrollbar-track,
+    .sidebar-left *::-webkit-scrollbar-track,
+    .sidebar-right *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .sidebar-left::-webkit-scrollbar-thumb,
+    .sidebar-right::-webkit-scrollbar-thumb,
+    .sidebar-left *::-webkit-scrollbar-thumb,
+    .sidebar-right *::-webkit-scrollbar-thumb {
+        background: rgba(128,128,128,0.3);
+        border-radius: 3px;
+    }
+    .sidebar-left::-webkit-scrollbar-thumb:hover,
+    .sidebar-right::-webkit-scrollbar-thumb:hover,
+    .sidebar-left *::-webkit-scrollbar-thumb:hover,
+    .sidebar-right *::-webkit-scrollbar-thumb:hover {
+        background: rgba(128,128,128,0.5);
+    }
+
+    /* Left Sidebar - Tools */
+    .sidebar-left {
+        width: 300px;
+        background: var(--bg-sidebar);
+        border-right: 1px solid var(--border-color);
+        padding: 1rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+        transition: width 0.2s, padding 0.2s;
+        position: relative;
+        flex-shrink: 0;
+    }
+    .sidebar-left.collapsed {
+        width: 40px;
+        padding: 0.4rem 0.25rem;
+        overflow: hidden;
+    }
+    .sidebar-left.collapsed .tool-section { display: none; }
+    .sidebar-left.collapsed .sidebar-header-content { display: none; }
+    .sidebar-left.collapsed .sidebar-toggle { display: flex; }
+    .sidebar-left.collapsed .sidebar-collapse-bar {
+        flex-direction: column;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .tool-section {
+        margin-bottom: 1.5rem;
+    }
+
+    .tool-section h4 {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin-bottom: 0.75rem;
+        letter-spacing: 0.5px;
+    }
+
+    .tool-btn {
+        display: block;
+        width: 100%;
+        padding: 0.5rem;
+        margin-bottom: 0.5rem;
+        background: var(--bg-tool-btn);
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        cursor: pointer;
+        text-align: left;
+        transition: all 0.2s;
+        color: var(--text-primary);
+        position: relative;
+    }
+
+    .tool-btn:hover {
+        background: var(--bg-tool-btn-hover);
+    }
+
+    .tool-btn.active {
+        background: var(--bg-tool-btn-active);
+        color: white;
+        border-color: var(--bg-tool-btn-active);
+    }
+
+    /* Fast responsive tooltips */
+    .tool-btn[title]:hover::after {
+        content: attr(title);
+        position: absolute;
+        left: 105%;
+        top: 50%;
+        transform: translateY(-50%);
+        background: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 0.4rem 0.6rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        white-space: nowrap;
+        z-index: 1000;
+        pointer-events: none;
+        animation: tooltip-fade-in 0.15s ease-out;
+        max-width: 200px;
+        white-space: normal;
+        line-height: 1.3;
+    }
+
+    .tool-btn[title]:hover::before {
+        content: '';
+        position: absolute;
+        left: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border: 5px solid transparent;
+        border-right-color: rgba(0, 0, 0, 0.9);
+        pointer-events: none;
+        z-index: 1000;
+        animation: tooltip-fade-in 0.15s ease-out;
+    }
+
+    @keyframes tooltip-fade-in {
+        from {
+            opacity: 0;
+            transform: translateY(-50%) translateX(-5px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(-50%) translateX(0);
+        }
+    }
+
+    /* Dark theme tooltip */
+    [data-theme="dark"] .tool-btn[title]:hover::after {
+        background: rgba(255, 255, 255, 0.95);
+        color: #16213e;
+    }
+
+    [data-theme="dark"] .tool-btn[title]:hover::before {
+        border-right-color: rgba(255, 255, 255, 0.95);
+    }
+
+    /* Main Canvas Area */
+    .canvas-area {
+        flex: 1;
+        background: var(--bg-canvas);
+        position: relative;
+        overflow: hidden;
+    }
+
+    #canvas-container {
+        width: 100%;
+        height: 100%;
+        cursor: grab;
+    }
+
+    #canvas-container.dragging {
+        cursor: grabbing;
+    }
+
+    /* Right Sidebar - Properties */
+    .sidebar-right {
+        width: 300px;
+        background: var(--bg-sidebar);
+        border-left: 1px solid var(--border-color);
+        padding: 1rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+        transition: width 0.2s, padding 0.2s, border 0.2s;
+        position: relative;
+        flex-shrink: 0;
+    }
+    .sidebar-right.collapsed {
+        width: 0;
+        padding: 0;
+        border: none;
+        overflow: hidden;
+    }
+
+    .property-group {
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .property-group label {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-bottom: 0.25rem;
+    }
+
+    .property-group input {
+        width: 100%;
+        padding: 0.4rem;
+        border: 1px solid var(--border-color);
+        border-radius: 4px;
+        background: var(--bg-input);
+        color: var(--text-primary);
+    }
+
+    /* Bottom Toolbar */
+    .bottom-toolbar {
+        position: absolute;
+        bottom: 1rem;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--bg-bottom-toolbar);
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+    }
+
+    .zoom-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .zoom-controls button {
+        width: 30px;
+        height: 30px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-zoom-btn);
+        border-radius: 4px;
+        cursor: pointer;
+        color: var(--text-primary);
+    }
+
+    .zoom-controls button:hover {
+        background: var(--bg-zoom-btn-hover);
+    }
+
+    /* Sheet Layers Panel */
+    .layer-item {
+        display: flex;
+        align-items: center;
+        padding: 0.5rem;
+        background: var(--bg-layer-item);
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+        cursor: pointer;
+    }
+
+    .layer-item:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .layer-item.selected {
+        background: var(--bg-layer-selected);
+        border: 1px solid var(--border-layer-selected);
+    }
+
+    .layer-visibility {
+        margin-right: 0.5rem;
+    }
+
+    /* Asset List */
+    .asset-item {
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border-light);
+        cursor: pointer;
+        font-size: 0.9rem;
+    }
+
+    .asset-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .asset-item.adjusted {
+        background: var(--bg-asset-adjusted);
+    }
+
+    /* Drag and Drop */
+    .dragging {
+        opacity: 0.5;
+    }
+
+    .drop-target-active {
+        background: #e3f2fd !important;
+        border: 2px dashed #2196f3 !important;
+    }
+
+    [data-theme="dark"] .drop-target-active {
+        background: #1a3a5a !important;
+        border: 2px dashed #4fc3f7 !important;
+    }
+
+    /* Group Item */
+    .group-item {
+        display: flex;
+        align-items: center;
+        padding: 0.3rem 0.4rem;
+        background: var(--bg-layer-item);
+        border-radius: 4px;
+        margin-bottom: 0.3rem;
+        cursor: pointer;
+        transition: background 0.2s, border 0.2s;
+        font-size: 0.85rem;
+    }
+
+    .group-item:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .group-item .group-icon {
+        margin-right: 0.4rem;
+        color: #ffc107;
+    }
+
+    .group-item .group-name {
+        flex: 1;
+        font-size: 0.85rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .group-item .group-count {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        margin-right: 0.3rem;
+    }
+
+    .group-item .group-visibility {
+        margin-right: 0.3rem;
+        cursor: pointer;
+    }
+
+    .group-item .group-actions {
+        display: flex;
+        gap: 0.15rem;
+    }
+
+    .group-item .group-actions button {
+        padding: 0.15rem 0.3rem;
+        font-size: 0.7rem;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        background: var(--btn-secondary);
+        color: var(--text-primary);
+    }
+
+    .group-item .group-actions button:hover {
+        background: var(--bg-tool-btn-hover);
+    }
+
+    /* Folder structure styles */
+    .folder-item, .ungrouped-folder {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 0.25rem 0.3rem;
+        background: var(--bg-layer-item);
+        border-radius: 4px;
+        margin-bottom: 0.25rem;
+        font-size: 0.85rem;
+    }
+
+    .folder-item:hover, .ungrouped-folder:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .folder-toggle {
+        background: none;
+        border: none;
+        padding: 0 4px;
+        font-size: 0.7rem;
+        cursor: pointer;
+        color: var(--text-muted);
+        width: 16px;
+    }
+
+    .folder-toggle:disabled {
+        opacity: 0.3;
+        cursor: default;
+    }
+
+    .folder-icon {
+        margin-right: 4px;
+        font-size: 0.9rem;
+    }
+
+    .group-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+
+    .group-count {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        background: var(--bg-tool-btn);
+        padding: 1px 5px;
+        border-radius: 10px;
+        margin-left: 4px;
+    }
+
+    .group-visibility {
+        margin: 0 4px;
+        cursor: pointer;
+    }
+
+    .folder-settings, .folder-delete {
+        background: none;
+        border: none;
+        padding: 2px 4px;
+        font-size: 0.75rem;
+        cursor: pointer;
+        color: var(--text-muted);
+        border-radius: 3px;
+    }
+
+    .folder-settings:hover {
+        background: var(--bg-tool-btn-hover);
+        color: var(--text-primary);
+    }
+
+    .folder-delete:hover {
+        background: #f8d7da;
+        color: #dc3545;
+    }
+
+    /* Header add button (compact plus icon for new folder) */
+    .header-add-btn {
+        background: none;
+        border: 1px solid var(--border-color);
+        border-radius: 3px;
+        width: 20px;
+        height: 20px;
+        font-size: 14px;
+        font-weight: bold;
+        line-height: 1;
+        cursor: pointer;
+        color: var(--text-muted);
+        margin-right: 4px;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .header-add-btn:hover {
+        background: var(--bg-tool-btn-active);
+        color: white;
+        border-color: var(--bg-tool-btn-active);
+    }
+
+    /* Drag handle for sortable sections */
+    .drag-handle {
+        cursor: grab;
+        color: var(--text-muted);
+        font-size: 10px;
+        letter-spacing: -2px;
+        padding: 0 4px;
+        opacity: 0.5;
+        transition: opacity 0.2s;
+        user-select: none;
+    }
+    .drag-handle:hover {
+        opacity: 1;
+    }
+    .drag-handle:active {
+        cursor: grabbing;
+    }
+    .sortable-layer-section.dragging {
+        opacity: 0.5;
+        background: var(--bg-layer-item-hover);
+    }
+    .sortable-layer-section.drag-over {
+        border-top: 2px solid var(--bg-tool-btn-active);
+    }
+
+    .folder-content, .folder-items {
+        width: 100%;
+        padding-left: 20px;
+        margin-top: 2px;
+    }
+
+    .folder-content.collapsed, .folder-items.collapsed {
+        display: none;
+    }
+
+    .folder-item-entry {
+        display: flex;
+        align-items: center;
+        padding: 2px 6px;
+        font-size: 0.8rem;
+        cursor: pointer;
+        border-radius: 3px;
+        margin: 1px 0;
+    }
+
+    .folder-item-entry:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .folder-item-entry.dragging {
+        opacity: 0.5;
+    }
+    
+    /* Folder drag styling */
+    .folder-item.dragging, .group-item.dragging {
+        opacity: 0.5;
+        border: 1px dashed var(--text-muted);
+    }
+
+    .folder-item-entry.selected-measurement {
+        background: rgba(0, 188, 212, 0.3);
+        border: 1px solid #00bcd4;
+    }
+
+    /* Global folder styling */
+    .global-folder {
+        border-left: 2px solid #17a2b8;
+        padding-left: 4px;
+        margin-left: -6px;
+    }
+
+    .global-folder .folder-icon {
+        color: #17a2b8;
+    }
+
+    /* Drop target highlight */
+    .drop-target-active {
+        background: rgba(23, 162, 184, 0.2) !important;
+        border-radius: 4px;
+    }
+
+    .item-indicator {
+        margin-right: 6px;
+        font-size: 0.75rem;
+    }
+
+    .item-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Folder settings menu */
+    .folder-settings-menu {
+        background: var(--bg-sidebar);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        min-width: 200px;
+        padding: 4px 0;
+    }
+
+    .folder-settings-menu .menu-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        display: flex;
+        align-items: center;
+    }
+
+    .folder-settings-menu .menu-item:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .folder-settings-menu .menu-item.disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .folder-settings-menu .menu-icon {
+        margin-right: 8px;
+        font-size: 0.9rem;
+    }
+
+    .folder-settings-menu .menu-separator {
+        height: 1px;
+        background: var(--border-color);
+        margin: 4px 0;
+    }
+
+    /* Import dropdown button */
+    .import-dropdown-wrapper {
+        position: relative;
+        width: 100%;
+        margin-bottom: 0.5rem;
+    }
+
+    .import-dropdown-btn {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-btn);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.85rem;
+        color: var(--text-primary);
+        transition: background 0.2s;
+    }
+
+    .import-dropdown-btn:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .import-dropdown-btn .dropdown-arrow {
+        font-size: 0.7rem;
+        transition: transform 0.2s;
+    }
+
+    .import-dropdown-btn.open .dropdown-arrow {
+        transform: rotate(180deg);
+    }
+
+    .import-dropdown-menu {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        background: var(--bg-sidebar);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        margin-top: 4px;
+        z-index: 100;
+        display: none;
+    }
+
+    .import-dropdown-menu.open {
+        display: block;
+    }
+
+    .import-dropdown-menu .dropdown-item {
+        padding: 0.5rem 0.75rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: background 0.2s;
+    }
+
+    .import-dropdown-menu .dropdown-item:hover {
+        background: var(--bg-layer-item-hover);
+    }
+
+    .import-dropdown-menu .dropdown-item:first-child {
+        border-radius: 6px 6px 0 0;
+    }
+
+    .import-dropdown-menu .dropdown-item:last-child {
+        border-radius: 0 0 6px 6px;
+    }
+
+    .import-dropdown-menu .dropdown-icon {
+        font-size: 1rem;
+    }
+
+    /* Asset/Link item in left sidebar */
+    .asset-item, .link-item {
+        font-size: 0.85rem;
+        padding: 0.3rem 0.4rem;
+    }
+
+    .coordinates {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+    }
+
+    /* Status bar */
+    .status-bar {
+        position: absolute;
+        top: 1rem;
+        left: 56px;
+        background: var(--bg-status-bar);
+        color: var(--text-status-bar);
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+    }
+
+    /* Modal styles */
+    .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--bg-modal-overlay);
+        z-index: 1000;
+    }
+
+    .modal-content {
+        background: var(--bg-modal);
+        max-width: 500px;
+        margin: 100px auto;
+        padding: 2rem;
+        border-radius: 8px;
+        color: var(--text-primary);
+    }
+
+    /* Tabs */
+    .tabs {
+        display: flex;
+        border-bottom: 1px solid var(--border-color);
+        margin-bottom: 1rem;
+    }
+
+    .tab {
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        color: var(--text-primary);
+    }
+
+    .tab.active {
+        border-bottom-color: var(--btn-primary);
+        color: var(--btn-primary);
+    }
+
+    .tab-content {
+        display: none;
+    }
+
+    .tab-content.active {
+        display: block;
+    }
+
+    /* Sidebar toggle buttons */
+    .sidebar-toggle {
+        width: 28px;
+        height: 28px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-tool-btn);
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        flex-shrink: 0;
+        margin-bottom: 0.5rem;
+    }
+    .sidebar-toggle:hover { background: var(--bg-tool-btn-hover); }
+
+    /* Right sidebar toggle floats on the canvas edge */
+    .right-toggle-btn {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        z-index: 10;
+    }
+
+    /* Dark mode toggle above the floating toolbar */
+    .dark-mode-toggle {
+        position: absolute;
+        top: 0.5rem;
+        left: 10px;
+        z-index: 11;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 1rem;
+        color: #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        transition: background 0.2s, transform 0.2s;
+    }
+    [data-theme="dark"] .dark-mode-toggle {
+        background: rgba(22, 33, 62, 0.75);
+    }
+    .dark-mode-toggle:hover {
+        background: rgba(0, 0, 0, 0.7);
+        transform: scale(1.05);
+    }
+    [data-theme="dark"] .dark-mode-toggle:hover {
+        background: rgba(22, 33, 62, 0.9);
+    }
+
+    /* Floating tool toolbar on the canvas */
+    .floating-toolbar {
+        position: absolute;
+        top: 3rem;
+        left: 10px;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        padding: 4px;
+        border-radius: 8px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+    }
+    [data-theme="dark"] .floating-toolbar {
+        background: rgba(22, 33, 62, 0.75);
+    }
+    .ftool-btn {
+        position: relative;
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.9);
+        cursor: pointer;
+        font-size: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.15s;
+    }
+    .ftool-btn:hover {
+        background: rgba(255, 255, 255, 0.15);
+    }
+    .ftool-btn.active {
+        background: var(--bg-tool-btn-active);
+        color: white;
+    }
+    .ftool-separator {
+        height: 1px;
+        background: rgba(255, 255, 255, 0.15);
+        margin: 2px 6px;
+    }
+    /* Tooltips for floating toolbar */
+    .ftool-btn[title]:hover::after {
+        content: attr(title);
+        position: absolute;
+        left: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+        background: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 0.3rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        white-space: nowrap;
+        z-index: 1000;
+        pointer-events: none;
+        animation: tooltip-fade-in 0.15s ease-out;
+    }
+    .ftool-btn[title]:hover::before {
+        content: '';
+        position: absolute;
+        left: calc(100% + 3px);
+        top: 50%;
+        transform: translateY(-50%);
+        border: 5px solid transparent;
+        border-right-color: rgba(0, 0, 0, 0.9);
+        pointer-events: none;
+        z-index: 1000;
+        animation: tooltip-fade-in 0.15s ease-out;
+    }
+    [data-theme="dark"] .ftool-btn[title]:hover::after {
+        background: rgba(255, 255, 255, 0.95);
+        color: #16213e;
+    }
+    [data-theme="dark"] .ftool-btn[title]:hover::before {
+        border-right-color: rgba(255, 255, 255, 0.95);
+    }
+
+    /* Layer group styles */
+    .layer-group-header {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.4rem 0;
+        cursor: pointer;
+        user-select: none;
+    }
+    .layer-group-header:hover {
+        opacity: 0.8;
+    }
+    .layer-group-chevron {
+        font-size: 0.65rem;
+        transition: transform 0.2s;
+        color: var(--text-muted);
+    }
+    .layer-group-chevron.collapsed {
+        transform: rotate(-90deg);
+    }
+    .layer-group-body {
+        transition: max-height 0.2s ease;
+        overflow: hidden;
+    }
+    .layer-group-body.collapsed {
+        display: none;
+    }
+
+    /* Import batch list styles */
+    .batch-item {
+        padding: 0.4rem 0.5rem;
+        background: var(--bg-layer-item);
+        border-radius: 4px;
+        margin-bottom: 0.4rem;
+        font-size: 0.85rem;
+    }
+    .batch-item .batch-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .batch-item .batch-name {
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+    }
+    .batch-item .batch-count {
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        margin-left: 0.5rem;
+    }
+    .batch-delete-btn {
+        background: none;
+        border: none;
+        color: var(--btn-danger);
+        cursor: pointer;
+        padding: 0 0.25rem;
+        font-size: 0.9rem;
+        opacity: 0.6;
+    }
+    .batch-delete-btn:hover { opacity: 1; }
+    .asset-delete-btn {
+        background: none;
+        border: none;
+        color: var(--btn-danger);
+        cursor: pointer;
+        padding: 0 0.25rem;
+        font-size: 0.75rem;
+        opacity: 0.5;
+        float: right;
+    }
+    .asset-delete-btn:hover { opacity: 1; }
+
+    /* Notification toast styles */
+    .notification-toast {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        max-width: 400px;
+        background: #323232;
+        color: #ffffff;
+        padding: 16px 24px;
+        border-radius: 4px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        font-size: 14px;
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(-20px);
+        transition: all 0.3s ease;
+        z-index: 10000;
+    }
+    .notification-toast.show {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+    }
+    .notification-toast.success {
+        background: #4caf50;
+    }
+    .notification-toast.error {
+        background: #f44336;
+    }
+    .notification-toast.info {
+        background: #2196f3;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="editor-container">
+    <!-- Left Sidebar - Tools -->
+    <div class="sidebar-left" id="sidebar-left">
+        <div class="sidebar-collapse-bar" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+            <span class="sidebar-header-content" style="display: contents;">
+                <a href="{% url 'drawings:project_list' %}" style="font-size: 0.8rem; color: var(--btn-primary); text-decoration: none;">&larr; Projects</a>
+                <span style="font-size: 0.8rem; font-weight: 600; color: var(--text-heading); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px;" title="{{ project.name }}">{{ project.name }}</span>
+            </span>
+            <div style="display: flex; gap: 0.25rem; align-items: center;">
+                <button class="sidebar-toggle" onclick="toggleLeftSidebar()" title="Toggle sidebar" style="margin: 0;">&laquo;</button>
+            </div>
+        </div>
+        <!-- View Rotation Controls -->
+        <div class="tool-section">
+            <h4>🔄 View Rotation</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <button class="tool-btn" onclick="matchSheetRotation()" title="Rotate the view to match the selected sheet's angle">
+                    📐 Match Sheet
+                </button>
+                <button class="tool-btn" onclick="resetViewportRotation()" title="Reset rotation to 0°">
+                    ↺ Reset
+                </button>
+            </div>
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <button class="tool-btn" style="flex: 1; text-align: center;" onclick="rotateViewportBy(-90)" title="Rotate -90°">-90</button>
+                <button class="tool-btn" style="flex: 1; text-align: center;" onclick="rotateViewportBy(-15)" title="Rotate -15°">-15</button>
+                <button class="tool-btn" style="flex: 1; text-align: center;" onclick="rotateViewportBy(15)" title="Rotate +15°">+15</button>
+                <button class="tool-btn" style="flex: 1; text-align: center;" onclick="rotateViewportBy(90)" title="Rotate +90°">+90</button>
+            </div>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <input type="number" id="viewport-rotation" value="0" step="1" style="flex: 1; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);" onchange="setViewportRotation(parseFloat(this.value) || 0)" title="Enter specific rotation angle">
+                <span style="font-size: 0.85rem; color: var(--text-muted);">deg</span>
+            </div>
+        </div>
+
+        <!-- Measure Panel (shown/hidden by floating toolbar measure button) -->
+        <div class="tool-section" id="measure-section" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                <h4 style="margin: 0;">📐 Measurement</h4>
+                <button class="header-add-btn" style="display: flex; align-items: center; justify-content: center;" 
+                        onclick="showMeasurementConfigModal()" title="Measurement Settings">
+                    <span style="font-size: 12px; line-height: 1;">⚙️</span>
+                </button>
+            </div>
+            <div id="measure-scale-warning" style="display: none; margin-bottom: 0.5rem; padding: 0.4rem; background: var(--bg-warning); border: 1px solid var(--border-warning); border-radius: 4px; font-size: 0.8rem; color: var(--text-warning);">
+                Scale not calibrated. Distances shown in pixels only.
+            </div>
+            
+            <!-- Config Type Selector -->
+            <div style="margin-bottom: 0.5rem;">
+                <label style="font-size: 0.8rem; color: var(--text-muted);">Style Preset</label>
+                <select id="measure-config-type" style="width: 100%; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; background: var(--bg-input); color: var(--text-primary); margin-top: 0.25rem;"
+                        onchange="onMeasureConfigTypeChange(this.value)">
+                    <!-- Options populated by JS -->
+                </select>
+                <div id="measure-config-preview" style="height: 3px; border-radius: 2px; margin-top: 0.25rem; background: #00bcd4;"></div>
+            </div>
+            
+            <div style="margin-bottom: 0.5rem;">
+                <label style="font-size: 0.8rem; color: var(--text-muted);">Measurement Mode</label>
+                <div style="display: flex; gap: 0.75rem; margin-top: 0.25rem;">
+                    <label style="font-size: 0.85rem; font-weight: normal; cursor: pointer;">
+                        <input type="radio" name="measure-type" value="single" checked
+                               onchange="toggleMeasureMode('single')"> Single
+                    </label>
+                    <label style="font-size: 0.85rem; font-weight: normal; cursor: pointer;">
+                        <input type="radio" name="measure-type" value="chain"
+                               onchange="toggleMeasureMode('chain')"> Chain
+                    </label>
+                </div>
+            </div>
+            <div id="measure-segments" style="max-height: 120px; overflow-y: auto; margin-bottom: 0.5rem;"></div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0; border-top: 1px solid var(--border-info-panel);">
+                <span>Total:</span>
+                <span id="measure-total">--</span>
+            </div>
+            <div id="measure-straight-row" style="display: none; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); padding: 0.2rem 0;">
+                <span>Straight line:</span>
+                <span id="measure-straight">--</span>
+            </div>
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                <button class="tool-btn" style="flex: 1; font-size: 0.85em;"
+                        onclick="saveMeasurementPrompt()">
+                    💾 Save
+                </button>
+                <button class="tool-btn" style="flex: 1; font-size: 0.85em;"
+                        onclick="clearMeasurements()">
+                    Clear
+                </button>
+            </div>
+        </div>
+
+        <!-- Import/Add Dropdown -->
+        <div class="tool-section">
+            <div class="import-dropdown-wrapper">
+                <button class="import-dropdown-btn" onclick="toggleImportDropdown(this)">
+                    <span>➕ Import / Add</span>
+                    <span class="dropdown-arrow">▼</span>
+                </button>
+                <div class="import-dropdown-menu" id="import-dropdown-menu">
+                    <div class="dropdown-item" onclick="showUploadModal(); closeImportDropdown();">
+                        <span class="dropdown-icon">📄</span>
+                        <span>Add Sheet (PDF)</span>
+                    </div>
+                    <div class="dropdown-item" onclick="showImportModal(); closeImportDropdown();">
+                        <span class="dropdown-icon">📍</span>
+                        <span>Import Assets CSV</span>
+                    </div>
+                    <div class="dropdown-item" onclick="showImportLinksModal(); closeImportDropdown();">
+                        <span class="dropdown-icon">🔗</span>
+                        <span>Import Links CSV</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sortable Layers Container -->
+        <div id="layers-container">
+        <!-- Layers -->
+        <div class="tool-section sortable-layer-section" data-section="sheets">
+            <div class="layer-group">
+                <div class="layer-group-header" onclick="toggleLayerGroup('sheets')">
+                    <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+                    <span class="layer-group-chevron" id="sheets-chevron">&#9660;</span>
+                    <span style="flex: 1; font-weight: 600; font-size: 0.85rem;">📄 Sheets</span>
+                    <button class="header-add-btn" onclick="event.stopPropagation(); showCreateGroupModal('sheet');" title="New Folder">+</button>
+                    <label onclick="event.stopPropagation();" style="cursor: pointer; font-size: 0.85rem;" title="Toggle all sheets">
+                        <input type="checkbox" id="sheets-group-vis" checked onchange="toggleGroupVisibility('sheets', this.checked)">
+                    </label>
+                </div>
+                <div class="layer-group-body" id="sheets-group-body">
+                    <div id="sheet-layers"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Measurements Layer Group - Before Assets/Links for better visibility -->
+        <div class="tool-section sortable-layer-section" data-section="measurements">
+            <div class="layer-group">
+                <div class="layer-group-header" onclick="toggleLayerGroup('measurements')">
+                    <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+                    <span class="layer-group-chevron" id="measurements-chevron">&#9660;</span>
+                    <span style="flex: 1; font-weight: 600; font-size: 0.85rem;">📐 Measurements</span>
+                    <button class="header-add-btn" onclick="event.stopPropagation(); showCreateGroupModal('measurement');" title="New Folder">+</button>
+                    <label onclick="event.stopPropagation();" style="cursor: pointer; font-size: 0.85rem;" title="Toggle all measurements">
+                        <input type="checkbox" id="measurements-group-vis" checked onchange="toggleGroupVisibility('measurements', this.checked)">
+                    </label>
+                </div>
+                <div class="layer-group-body" id="measurements-group-body">
+                    <!-- Measurement Groups (includes Ungrouped folder) -->
+                    <div id="measurement-groups-list" style="max-height: 300px; overflow-y: auto;"></div>
+                </div><!-- /measurements-group-body -->
+            </div><!-- /layer-group -->
+        </div>
+
+        <div class="tool-section sortable-layer-section" data-section="assets">
+            <div class="layer-group">
+                <div class="layer-group-header" onclick="toggleLayerGroup('assets')">
+                    <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+                    <span class="layer-group-chevron" id="assets-chevron">&#9660;</span>
+                    <span style="flex: 1; font-weight: 600; font-size: 0.85rem;">📍 Assets</span>
+                    <button class="header-add-btn" onclick="event.stopPropagation(); showCreateGroupModal('asset');" title="New Folder">+</button>
+                    <label onclick="event.stopPropagation();" style="cursor: pointer; font-size: 0.85rem;" title="Toggle all assets">
+                        <input type="checkbox" id="assets-group-vis" checked onchange="toggleGroupVisibility('assets', this.checked)">
+                    </label>
+                </div>
+                <div class="layer-group-body" id="assets-group-body">
+                    <input type="text" id="asset-search-left" placeholder="Search assets..."
+                           style="width: 100%; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; margin-bottom: 0.5rem; background: var(--bg-input); color: var(--text-primary);">
+                    
+                    <!-- Asset Groups (includes Ungrouped folder) -->
+                    <div id="asset-groups-list" style="max-height: 300px; overflow-y: auto;"></div>
+                    
+                    <div id="import-batches"></div>
+                    <button class="tool-btn" style="margin-top: 0.5rem;" onclick="toggleVerifyPanel()">
+                        Verify & Plot
+                    </button>
+            <div id="verify-panel" style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: var(--bg-info-panel); border: 1px solid var(--border-info-panel); border-radius: 4px;">
+                <div id="verify-scale-warning" style="display: none; margin-bottom: 0.5rem; padding: 0.4rem; background: var(--bg-warning); border: 1px solid var(--border-warning); border-radius: 4px; font-size: 0.8rem; color: var(--text-warning);">
+                    Scale not calibrated. Use the Scale tool first for accurate placement.
+                </div>
+                <div style="margin-bottom: 0.5rem;">
+                    <label style="font-size: 0.8rem; color: var(--text-muted);">Coordinate Unit</label>
+                    <select id="verify-coord-unit" style="width: 100%; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; background: var(--bg-input); color: var(--text-primary);"
+                            onchange="onCoordUnitChange(this.value)">
+                        <option value="meters">Meters</option>
+                        <option value="degrees">Lat/Lon Degrees (WGS84)</option>
+                        <option value="gda94_geo">GDA94 Geographic (Lat/Lon)</option>
+                        <option value="gda94_mga">GDA94 MGA (Easting/Northing)</option>
+                    </select>
+                </div>
+                <div style="margin-bottom: 0.5rem;">
+                    <label style="font-size: 0.8rem; color: var(--text-muted);">Reference Asset</label>
+                    <input type="text" id="verify-asset-search" placeholder="Search assets..."
+                           style="width: 100%; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; margin-bottom: 0.3rem; box-sizing: border-box; background: var(--bg-input); color: var(--text-primary);"
+                           oninput="filterVerifyAssetSelect(this.value)"
+                           onfocus="expandVerifyAssetList()"
+                           >
+                    <select id="verify-asset-select" size="1"
+                            style="width: 100%; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; transition: height 0.25s ease; overflow-y: auto; background: var(--bg-input); color: var(--text-primary);"
+                            onchange="onVerifyAssetSelected()"
+                            onfocus="expandVerifyAssetList()">
+                        <option value="">-- Select --</option>
+                    </select>
+                </div>
+                <div id="verify-ref-info" style="display: none; margin-bottom: 0.5rem; padding: 0.4rem; background: var(--bg-layer-item); border-radius: 4px; font-size: 0.8rem;">
+                    <strong>Coords:</strong> <span id="verify-ref-coords"></span><br>
+                    <span id="verify-ref-placed" style="color: var(--text-muted);">Click map to set location</span>
+                </div>
+                <div style="margin-bottom: 0.5rem;">
+                    <label style="font-size: 0.8rem; color: var(--text-muted);">Rotation</label>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="range" id="verify-rotation-slider" min="0" max="360" value="0" step="1" style="flex: 1;"
+                               oninput="onVerifyRotationChange(parseFloat(this.value))">
+                        <input type="number" id="verify-rotation-input" value="0" step="1"
+                               style="width: 55px; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; background: var(--bg-input); color: var(--text-primary);"
+                               onchange="onVerifyRotationChange(parseFloat(this.value) || 0)">
+                    </div>
+                </div>
+                <button class="btn btn-success" style="width: 100%; font-size: 0.85rem;" onclick="applyVerification()">Apply & Plot All</button>
+            </div>
+            <div style="margin-top: 0.5rem;">
+                <label style="font-size: 0.85rem; color: var(--text-muted);">Asset Rotation</label>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <input type="range" id="asset-rotation-slider" min="0" max="360" value="0" style="flex: 1;"
+                           oninput="setAssetRotation(parseFloat(this.value))">
+                    <input type="number" id="asset-rotation-input" value="0" step="1"
+                           style="width: 60px; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);"
+                           onchange="setAssetRotation(parseFloat(this.value) || 0)">
+                    <span style="font-size: 0.85rem; color: var(--text-muted);">deg</span>
+                </div>
+            </div>
+                </div><!-- /assets-group-body -->
+            </div><!-- /layer-group -->
+        </div>
+
+        <!-- Links Layer Group -->
+        <div class="tool-section sortable-layer-section" data-section="links">
+            <div class="layer-group">
+                <div class="layer-group-header" onclick="toggleLayerGroup('links')">
+                    <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+                    <span class="layer-group-chevron" id="links-chevron">&#9660;</span>
+                    <span style="flex: 1; font-weight: 600; font-size: 0.85rem;">🔗 Links</span>
+                    <button class="header-add-btn" onclick="event.stopPropagation(); showCreateGroupModal('link');" title="New Folder">+</button>
+                    <label onclick="event.stopPropagation();" style="cursor: pointer; font-size: 0.85rem;" title="Toggle all links">
+                        <input type="checkbox" id="links-group-vis" checked onchange="toggleGroupVisibility('links', this.checked)">
+                    </label>
+                </div>
+                <div class="layer-group-body" id="links-group-body">
+                    <input type="text" id="link-search" placeholder="Search links..."
+                           style="width: 100%; padding: 0.3rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.85rem; margin-bottom: 0.5rem; background: var(--bg-input); color: var(--text-primary);">
+                    
+                    <!-- Link Groups (includes Ungrouped folder) -->
+                    <div id="link-groups-list" style="max-height: 300px; overflow-y: auto;"></div>
+                    
+                    <div id="link-import-batches"></div>
+                </div><!-- /links-group-body -->
+            </div><!-- /layer-group -->
+        </div>
+
+        <!-- Unified View -->
+        <div class="tool-section sortable-layer-section" data-section="unified">
+            <div class="layer-group">
+                <div class="layer-group-header" onclick="toggleLayerGroup('unified')">
+                    <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+                    <span class="layer-group-chevron" id="unified-chevron">&#9654;</span>
+                    <span style="flex: 1; font-weight: 600; font-size: 0.85rem;">📋 Unified View</span>
+                    <label onclick="event.stopPropagation();" style="cursor: pointer; font-size: 0.85rem;" title="Toggle unified view">
+                        <input type="checkbox" id="unified-group-vis" checked onchange="toggleGroupVisibility('unified', this.checked)">
+                    </label>
+                </div>
+                <div class="layer-group-body collapsed" id="unified-group-body">
+                    <!-- View options -->
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px; padding: 4px 8px; background: var(--bg-secondary); border-radius: 4px;">
+                        <label style="display: flex; align-items: center; gap: 4px; font-size: 0.75rem; cursor: pointer;" title="Show folder hierarchy instead of flat list">
+                            <input type="checkbox" id="unified-show-folders" onchange="toggleUnifiedFolderView(this.checked)">
+                            <span>📁 Folder Structure</span>
+                        </label>
+                    </div>
+                    <!-- Unified list showing all items from all types -->
+                    <div id="unified-items-list" style="max-height: 400px; overflow-y: auto; margin-bottom: 0.5rem;"></div>
+                </div><!-- /unified-group-body -->
+            </div><!-- /layer-group -->
+        </div>
+        </div><!-- /layers-container -->
+
+        <div class="tool-section">
+            <h4>Export</h4>
+            <a href="{% url 'drawings:export_project_sqlite' project.pk %}" class="btn btn-success" style="width: 100%; display: block; text-align: center; text-decoration: none;">
+                � Export Project (.docuweaver)
+            </a>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0.25rem 0 0.5rem 0;">Includes PDFs and all data</p>
+            <button class="btn" style="width: 100%; margin-top: 0.5rem;" onclick="downloadReport()">
+                📊 Adjustment Report
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Canvas Area -->
+    <div class="canvas-area">
+        <button class="sidebar-toggle right-toggle-btn" onclick="toggleRightSidebar()" title="Toggle properties panel">&raquo;</button>
+
+        <!-- Dark Mode Toggle - Above floating toolbar -->
+        <button class="dark-mode-toggle" id="dark-mode-toggle" onclick="toggleTheme()" title="Toggle dark/light mode">
+            <span id="dark-mode-icon">🌙</span>
+        </button>
+
+        <!-- Floating Tool Toolbar -->
+        <div class="floating-toolbar" id="floating-toolbar">
+            <button class="ftool-btn active" data-mode="pan" onclick="setMode('pan')" title="Pan & Zoom">✋</button>
+            <button class="ftool-btn" data-mode="select" onclick="setMode('select')" title="Select">➤</button>
+            <button class="ftool-btn" data-mode="measure" onclick="toggleMeasurePanel()" title="Measure">📐</button>
+            <div class="ftool-separator"></div>
+            <button class="ftool-btn" id="osm-toggle-btn" onclick="toggleOSMLayer()" title="Toggle OpenStreetMap Layer">🗺️</button>
+            <button class="ftool-btn" onclick="showRenderingHierarchyModal()" title="Rendering Order">📚</button>
+            <div class="ftool-separator"></div>
+            <button class="ftool-btn" data-mode="crop" onclick="setMode('crop')" title="Cut Line">✂</button>
+            <button class="ftool-btn context-tool" id="ftool-flip" onclick="flipSelectedSheetCut()" title="Flip Cut Side" style="display:none;">⟲</button>
+            <button class="ftool-btn context-tool" id="ftool-clear-cut" onclick="clearSelectedSheetCut()" title="Clear Cut" style="display:none;">↩</button>
+            <button class="ftool-btn context-tool" id="ftool-show-uncut" onclick="toggleShowUncut()" title="Show Uncut" style="display:none;">👁</button>
+            <div class="ftool-separator"></div>
+            <button class="ftool-btn" data-mode="split" onclick="setMode('split')" title="Split Sheet">⫽</button>
+            <button class="ftool-btn" data-mode="origin" onclick="setMode('origin')" title="Set Origin">⊕</button>
+            <button class="ftool-btn" data-mode="calibrate" onclick="setMode('calibrate')" title="Calibrate Scale">📏</button>
+        </div>
+
+        <div id="notification-toast" class="notification-toast"></div>
+        <div id="canvas-container"></div>
+
+        <div class="status-bar" id="status-bar">
+            Mode: <span id="current-mode">Pan</span> |
+            Zoom: <span id="zoom-level">100</span>% |
+            Rotation: <span id="rotation-level">0</span>° |
+            Position: <span id="cursor-position">0, 0</span>
+        </div>
+
+        <div class="bottom-toolbar">
+            <div class="zoom-controls">
+                <button onclick="zoomOut()">−</button>
+                <span id="zoom-display">100%</span>
+                <button onclick="zoomIn()">+</button>
+                <button onclick="zoomFit()">Fit</button>
+            </div>
+            <button class="btn" onclick="resetView()">Reset View</button>
+        </div>
+    </div>
+
+    <!-- Right Sidebar - Properties -->
+    <div class="sidebar-right" id="sidebar-right">
+        <div class="tabs">
+            <div class="tab active" data-tab="properties" onclick="showTab('properties')">Properties</div>
+        </div>
+
+        <div id="properties-tab" class="tab-content active">
+            <div id="no-selection" style="color: var(--text-muted); text-align: center; padding: 2rem;">
+                Select a sheet or asset to view properties
+            </div>
+
+            <div id="sheet-properties" style="display: none;">
+                <h4 style="margin-bottom: 1rem;">Sheet Properties</h4>
+                <div class="property-group">
+                    <label>Name</label>
+                    <input type="text" id="sheet-name" onchange="updateSheetProperty('name', this.value)">
+                </div>
+                <div class="property-group">
+                    <label>Offset X (px)</label>
+                    <input type="number" id="sheet-offset-x" onchange="updateSheetProperty('offset_x', this.value)">
+                </div>
+                <div class="property-group">
+                    <label>Offset Y (px)</label>
+                    <input type="number" id="sheet-offset-y" onchange="updateSheetProperty('offset_y', this.value)">
+                </div>
+                <div class="property-group">
+                    <label>Rotation (deg)</label>
+                    <input type="number" id="sheet-rotation" onchange="updateSheetProperty('rotation', this.value)">
+                </div>
+                <div class="property-group">
+                    <label>Z-Index (layer order)</label>
+                    <input type="number" id="sheet-zindex" onchange="updateSheetProperty('z_index', this.value)">
+                </div>
+                <!-- PDF Layers (OCG) -->
+                <div id="pdf-layers-section" style="display: none; margin-top: 1rem;">
+                    <h4 style="margin-bottom: 0.5rem;">PDF Layers</h4>
+                    <div id="pdf-layers-list" style="max-height: 200px; overflow-y: auto;"></div>
+                    <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                        <button class="btn" style="flex: 1; font-size: 0.8rem;" onclick="toggleAllPdfLayers(true)">All On</button>
+                        <button class="btn" style="flex: 1; font-size: 0.8rem;" onclick="toggleAllPdfLayers(false)">All Off</button>
+                    </div>
+                </div>
+
+                <button class="btn btn-danger" style="width: 100%; margin-top: 1rem;" onclick="deleteSelectedSheet()">
+                    Delete Sheet
+                </button>
+            </div>
+
+            <div id="asset-properties" style="display: none;">
+                <h4 style="margin-bottom: 1rem;">Asset Properties</h4>
+                <div class="property-group">
+                    <label>Asset ID</label>
+                    <input type="text" id="asset-id" readonly>
+                </div>
+                <div class="property-group">
+                    <label>Name</label>
+                    <input type="text" id="asset-name" readonly>
+                </div>
+                <div class="property-group">
+                    <label>Original X (m)</label>
+                    <input type="number" id="asset-orig-x" readonly>
+                </div>
+                <div class="property-group">
+                    <label>Original Y (m)</label>
+                    <input type="number" id="asset-orig-y" readonly>
+                </div>
+                <div class="property-group">
+                    <label>Adjusted X (m)</label>
+                    <input type="number" id="asset-adj-x" step="0.01" onchange="updateAssetPosition()">
+                </div>
+                <div class="property-group">
+                    <label>Adjusted Y (m)</label>
+                    <input type="number" id="asset-adj-y" step="0.01" onchange="updateAssetPosition()">
+                </div>
+                <div class="property-group">
+                    <label>Notes</label>
+                    <textarea id="asset-notes" rows="2" style="background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-color);"></textarea>
+                </div>
+                <button class="btn btn-success" style="width: 100%;" onclick="saveAssetAdjustment()">
+                    Save Adjustment
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Group Modal -->
+<div id="createGroupModal" class="modal">
+    <div class="modal-content">
+        <h2 style="margin-bottom: 1rem;">Create New Group</h2>
+        <form id="createGroupForm">
+            <input type="hidden" id="group-type" value="asset">
+            <div class="form-group">
+                <label>Group Name</label>
+                <input type="text" id="group-name" required placeholder="e.g., Electrical Assets">
+            </div>
+            <div class="form-group">
+                <label>Parent Group (optional)</label>
+                <select id="group-parent" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                    <option value="">None (Root level)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Visibility Scope</label>
+                <select id="group-scope" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                    <option value="local" selected>Local - Only in this section</option>
+                    <option value="global">Global - Visible in all sections</option>
+                </select>
+                <small style="display: block; margin-top: 0.3rem; color: var(--text-secondary);">Local folders only appear in their own section (Sheets, Assets, Links, or Measurements). Global folders appear in all sections.</small>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideCreateGroupModal()">Cancel</button>
+                <button type="submit" class="btn btn-success">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Upload Sheet Modal -->
+<div id="uploadModal" class="modal">
+    <div class="modal-content">
+        <h2 style="margin-bottom: 1rem;">Upload PDF Sheets</h2>
+        <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.9rem;">
+            Select one or more PDFs. Multi-page PDFs create separate sheets per page.<br>
+            Sheet names are derived from filenames automatically.
+        </p>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>PDF Files</label>
+                <input type="file" name="pdf_file" accept=".pdf" required multiple>
+            </div>
+            <div id="uploadProgress" style="display: none; margin-bottom: 1rem;">
+                <div class="text-muted" style="font-size: 0.9rem;">
+                    Uploading <span id="uploadCurrent">0</span> / <span id="uploadTotal">0</span>...
+                </div>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideUploadModal()">Cancel</button>
+                <button type="submit" class="btn btn-success" id="uploadBtn">Upload</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Import CSV Modal (Two-step) -->
+<div id="importModal" class="modal">
+    <div class="modal-content">
+        <h2 style="margin-bottom: 1rem;">Import Assets from CSV</h2>
+
+        <!-- Step 1: File Selection -->
+        <div id="import-step-1">
+            <p class="text-muted" style="margin-bottom: 1rem;">
+                Select a CSV file, then map its columns to the required fields.
+            </p>
+            <div class="form-group">
+                <label>CSV File</label>
+                <input type="file" id="import-csv-file" accept=".csv" required>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideImportModal()">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="importStepNext()">Next</button>
+            </div>
+        </div>
+
+        <!-- Step 2: Column Mapping -->
+        <div id="import-step-2" style="display: none;">
+            <p class="text-muted" style="margin-bottom: 0.75rem;">
+                Map CSV columns to the required fields. Auto-detected where possible.
+            </p>
+            <div id="import-csv-preview" style="margin-bottom: 0.75rem; padding: 0.5rem; background: var(--bg-layer-item); border-radius: 4px; font-size: 0.85rem; max-height: 60px; overflow-y: auto;"></div>
+            <div class="form-group">
+                <label>Asset ID <span style="color: var(--text-required);">*</span></label>
+                <select id="map-asset-id" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Asset Type <span style="color: var(--text-required);">*</span></label>
+                <div style="margin-bottom: 0.4rem;">
+                    <label style="margin-right: 1rem; font-weight: normal; font-size: 0.85rem;">
+                        <input type="radio" name="asset-type-mode" value="column" checked
+                               onchange="toggleAssetTypeMode()"> From CSV column
+                    </label>
+                    <label style="font-weight: normal; font-size: 0.85rem;">
+                        <input type="radio" name="asset-type-mode" value="fixed"
+                               onchange="toggleAssetTypeMode()"> Fixed type
+                    </label>
+                </div>
+                <select id="map-asset-type" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                </select>
+                <select id="fixed-asset-type" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; display: none; background: var(--bg-input); color: var(--text-primary);">
+                    <option value="TN Intersection">TN Intersection</option>
+                    <option value="VSL">VSL</option>
+                    <option value="CCTV">CCTV</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>X Coordinate <span style="color: var(--text-required);">*</span></label>
+                <select id="map-x" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Y Coordinate <span style="color: var(--text-required);">*</span></label>
+                <select id="map-y" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Name (optional)</label>
+                <select id="map-name" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                    <option value="">-- None --</option>
+                </select>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="importStepBack()">Back</button>
+                <button type="button" class="btn btn-success" onclick="importWithMapping()">Import</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Calibration Modal -->
+<div id="calibrateModal" class="modal">
+    <div class="modal-content">
+        <h2 style="margin-bottom: 1rem;">Set Scale</h2>
+        <p class="text-muted" style="margin-bottom: 1rem;">
+            Enter the real-world distance between the two points you clicked.
+        </p>
+        <div class="form-group">
+            <label>Pixel Distance (measured)</label>
+            <input type="number" id="pixel-distance" readonly>
+        </div>
+        <div class="form-group">
+            <label>Real Distance (meters)</label>
+            <input type="number" id="real-distance" step="0.1" required>
+        </div>
+        <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+            <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideCalibrateModal()">Cancel</button>
+            <button type="button" class="btn btn-success" onclick="applyCalibration()">Apply</button>
+        </div>
+    </div>
+</div>
+
+<!-- Save Measurement Modal -->
+<div id="saveMeasurementModal" class="modal">
+    <div class="modal-content">
+        <h2 style="margin-bottom: 1rem;">Save Measurement</h2>
+        <form id="saveMeasurementForm">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" id="measurement-name" required placeholder="e.g., Driveway Length">
+            </div>
+            <div class="form-group">
+                <label>Folder</label>
+                <select id="measurement-folder" style="width: 100%; padding: 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary);">
+                    <option value="">Ungrouped</option>
+                </select>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideSaveMeasurementModal()">Cancel</button>
+                <button type="submit" class="btn btn-success">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Measurement Config Modal -->
+<div id="measurementConfigModal" class="modal measurement-config-modal">
+    <div class="modal-content" style="max-width: 420px; padding: 1.25rem;">
+        <h2 style="margin-bottom: 0.75rem; font-size: 1.1rem;">⚙️ Measurement Settings</h2>
+        
+        <!-- Tabs -->
+        <div style="display: flex; border-bottom: 1px solid var(--border-color); margin-bottom: 0.75rem;">
+            <button type="button" class="config-tab active" data-tab="style" onclick="switchMeasureConfigTab('style')">
+                🎨 Style
+            </button>
+            <button type="button" class="config-tab" data-tab="display" onclick="switchMeasureConfigTab('display')">
+                👁️ Display
+            </button>
+            <button type="button" class="config-tab" data-tab="presets" onclick="switchMeasureConfigTab('presets')">
+                📋 Presets
+            </button>
+        </div>
+        
+        <!-- Style Tab -->
+        <div id="config-tab-style" class="config-tab-content">
+            <div class="form-group compact">
+                <label>Line Color</label>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <input type="color" id="config-line-color" value="#00bcd4" style="width: 40px; height: 26px; border: none; cursor: pointer;">
+                    <input type="text" id="config-line-color-hex" value="#00bcd4" style="flex: 1; padding: 0.3rem;" 
+                           onchange="document.getElementById('config-line-color').value = this.value;">
+                </div>
+            </div>
+            <div class="form-group compact">
+                <label>Line Style</label>
+                <select id="config-line-style" style="width: 100%; padding: 0.3rem;">
+                    <option value="dashed">Dashed ----</option>
+                    <option value="solid">Solid ────</option>
+                    <option value="dotted">Dotted ····</option>
+                    <option value="dashdot">Dash-Dot -·-·</option>
+                </select>
+            </div>
+            <div class="form-group compact">
+                <label>Thickness: <span id="config-thickness-value">1.5</span>px</label>
+                <input type="range" id="config-line-thickness" min="0.5" max="5" step="0.5" value="1.5" 
+                       style="width: 100%;" oninput="document.getElementById('config-thickness-value').textContent = this.value;">
+            </div>
+            <div class="form-group compact">
+                <label>Marker Size: <span id="config-marker-value">4</span>px</label>
+                <input type="range" id="config-marker-size" min="2" max="10" step="1" value="4" 
+                       style="width: 100%;" oninput="document.getElementById('config-marker-value').textContent = this.value;">
+            </div>
+        </div>
+        
+        <!-- Display Tab -->
+        <div id="config-tab-display" class="config-tab-content" style="display: none;">
+            <div class="form-group compact">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                    <input type="checkbox" id="config-show-distance" checked>
+                    Show Distance
+                </label>
+            </div>
+            <div class="form-group compact">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                    <input type="checkbox" id="config-show-angle" checked>
+                    Show Angle
+                </label>
+            </div>
+            <div class="form-group compact">
+                <label>Label Scale: <span id="config-scale-value">1.0</span>x</label>
+                <input type="range" id="config-label-scale" min="0.5" max="3" step="0.1" value="1.0" 
+                       style="width: 100%;" oninput="document.getElementById('config-scale-value').textContent = this.value;">
+                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem;">
+                    Adjust for your monitor size
+                </div>
+            </div>
+        </div>
+        
+        <!-- Presets Tab -->
+        <div id="config-tab-presets" class="config-tab-content" style="display: none;">
+            <div class="form-group compact">
+                <label>Saved Presets</label>
+                <div id="config-presets-list" style="max-height: 120px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; margin-bottom: 0.5rem;">
+                    <!-- Preset items rendered by JS -->
+                </div>
+            </div>
+            <div class="form-group compact">
+                <label>Save as New Preset</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="config-new-preset-name" placeholder="Preset name..." style="flex: 1; padding: 0.3rem;">
+                    <button type="button" class="btn btn-success" style="padding: 0.3rem 0.6rem; font-size: 0.8rem;" onclick="addNewConfigType()">Save</button>
+                </div>
+            </div>
+        </div>
+        
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color);">
+            <button type="button" class="btn" style="background: var(--btn-secondary); padding: 0.4rem 0.8rem; font-size: 0.85rem;" onclick="hideMeasurementConfigModal()">Cancel</button>
+            <button type="button" class="btn btn-success btn-save" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;" onclick="saveMeasurementConfig()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Rendering Hierarchy Modal -->
+<div id="renderingHierarchyModal" class="modal">
+    <div class="modal-content" style="max-width: 420px; padding: 1.5rem;">
+        <h2 style="margin-bottom: 1rem; font-size: 1.1rem;">📚 Rendering Order</h2>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+            Drag to reorder layer types. Top items render above bottom items. Sheet Z-index controls order within the Sheets layer.
+        </p>
+        
+        <div id="hierarchy-list" style="display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.5rem;">
+            <!-- Populated dynamically -->
+        </div>
+        
+        <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+            <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideRenderingHierarchyModal()">Cancel</button>
+            <button type="button" class="btn btn-success" onclick="applyHierarchyChanges()">Apply</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* Measurement config modal - lighter overlay */
+    .measurement-config-modal {
+        background: rgba(0, 0, 0, 0.3) !important;
+    }
+    .measurement-config-modal .modal-content {
+        margin: 80px auto;
+        max-height: calc(100vh - 160px);
+        overflow-y: auto;
+    }
+    .form-group.compact {
+        margin-bottom: 0.6rem;
+    }
+    .form-group.compact label {
+        font-size: 0.8rem;
+        margin-bottom: 0.25rem;
+    }
+    
+    /* Measurement config modal tabs */
+    .config-tab {
+        padding: 0.4rem 0.75rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s;
+    }
+    .config-tab:hover {
+        color: var(--text-primary);
+    }
+    .config-tab.active {
+        color: var(--bg-tool-btn-active);
+        border-bottom-color: var(--bg-tool-btn-active);
+    }
+    .config-preset-item {
+        display: flex;
+        align-items: center;
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border-light);
+        cursor: pointer;
+    }
+    .config-preset-item:hover {
+        background: var(--bg-layer-item-hover);
+    }
+    .config-preset-item.active {
+        background: var(--bg-layer-selected);
+    }
+    .config-preset-color {
+        width: 20px;
+        height: 20px;
+        border-radius: 3px;
+        margin-right: 0.5rem;
+        border: 1px solid var(--border-color);
+    }
+    .config-preset-name {
+        flex: 1;
+        font-size: 0.85rem;
+    }
+    .config-preset-delete {
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        padding: 0.25rem;
+        font-size: 0.8rem;
+    }
+    .config-preset-delete:hover {
+        color: #dc3545;
+    }
+    /* Config type item styles */
+    .config-type-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.5rem 0.75rem;
+        background: var(--bg-sidebar);
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+        border: 1px solid var(--border-light);
+        transition: all 0.2s;
+    }
+    .config-type-item:hover {
+        background: var(--bg-layer-item-hover);
+    }
+    .config-type-item.active {
+        border-color: var(--bg-tool-btn-active);
+        background: var(--bg-layer-selected);
+    }
+    .config-type-name {
+        font-size: 0.85rem;
+        display: flex;
+        align-items: center;
+    }
+    .config-type-actions {
+        display: flex;
+        gap: 0.25rem;
+    }
+    .config-type-actions button {
+        padding: 0.2rem 0.5rem;
+        font-size: 0.75rem;
+        border-radius: 3px;
+        border: none;
+        cursor: pointer;
+    }
+    .btn-apply {
+        background: var(--bg-tool-btn-active);
+        color: white;
+    }
+    .btn-edit {
+        background: var(--btn-secondary);
+        color: var(--text-primary);
+    }
+    .btn-delete-config {
+        background: #dc3545;
+        color: white;
+        padding: 0.2rem 0.4rem !important;
+    }
+    .config-type-preview {
+        display: inline-block;
+        width: 20px;
+        height: 3px;
+        margin-right: 8px;
+        vertical-align: middle;
+    }
+
+    /* Rendering Hierarchy Modal */
+    .hierarchy-item {
+        display: flex;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background: var(--bg-sidebar);
+        border: 2px solid var(--border-light);
+        border-radius: 6px;
+        cursor: move;
+        transition: all 0.2s;
+        user-select: none;
+    }
+    .hierarchy-item:hover {
+        background: var(--bg-layer-item-hover);
+        border-color: var(--bg-tool-btn-active);
+    }
+    .hierarchy-item.dragging {
+        opacity: 0.5;
+        transform: scale(0.98);
+    }
+    .hierarchy-item .drag-handle {
+        font-size: 1rem;
+        margin-right: 0.75rem;
+        color: var(--text-muted);
+        cursor: grab;
+    }
+    .hierarchy-item .drag-handle:active {
+        cursor: grabbing;
+    }
+    .hierarchy-item .layer-label {
+        flex: 1;
+        font-size: 0.95rem;
+        font-weight: 500;
+    }
+    .hierarchy-item .layer-order {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        font-style: italic;
+    }
+</style>
+
+{% csrf_token %}
+<script src="{% static 'js/vendor/fabric.min.js' %}"></script>
+<script>
+    const PROJECT_ID = {{ project.pk }};
+    const PROJECT_DATA = {
+        pixels_per_meter: {{ project.pixels_per_meter }},
+        scale_calibrated: {{ project.scale_calibrated|yesno:"true,false" }},
+        coord_unit: '{{ project.coord_unit|escapejs }}',
+        origin_x: {{ project.origin_x }},
+        origin_y: {{ project.origin_y }},
+        canvas_rotation: {{ project.canvas_rotation }},
+        asset_rotation: {{ project.asset_rotation }},
+        ref_asset_id: '{{ project.ref_asset_id|escapejs }}',
+        ref_pixel_x: {{ project.ref_pixel_x }},
+        ref_pixel_y: {{ project.ref_pixel_y }},
+        cadastre_enabled: {{ project.cadastre_enabled|yesno:"true,false" }},
+        cadastre_color: '{{ project.cadastre_color|escapejs }}',
+        osm_enabled: {{ project.osm_enabled|yesno:"true,false" }},
+        osm_opacity: {{ project.osm_opacity }},
+        osm_z_index: {{ project.osm_z_index }}
+    };
+</script>
+<script src="{% static 'js/tool_section_item.js' %}"></script>
+<script src="{% static 'js/measurement_tool.js' %}"></script>
+<!-- Modular canvas editor - load in dependency order -->
+<script src="{% static 'js/editor/namespace.js' %}"></script>
+<script src="{% static 'js/editor/undo.js' %}"></script>
+<script src="{% static 'js/editor/viewport.js' %}"></script>
+<script src="{% static 'js/editor/tools.js' %}"></script>
+<script src="{% static 'js/editor/canvas_init.js' %}"></script>
+<script src="{% static 'js/editor/crop.js' %}"></script>
+<script src="{% static 'js/editor/split.js' %}"></script>
+<script src="{% static 'js/editor/calibration.js' %}"></script>
+<script src="{% static 'js/editor/assets.js' %}"></script>
+<script src="{% static 'js/editor/links.js' %}"></script>
+<script src="{% static 'js/editor/sheets.js' %}"></script>
+<script src="{% static 'js/editor/osm.js' %}"></script>
+<script src="{% static 'js/editor/measurements.js' %}"></script>
+<script src="{% static 'js/editor/layers.js' %}"></script>
+<script src="{% static 'js/editor/imports.js' %}"></script>
+<script src="{% static 'js/editor/sidebar.js' %}"></script>
+<script src="{% static 'js/editor/main.js' %}"></script>
+<script src="{% static 'js/editor/verify.js' %}"></script>
+<script>
+    // Sync dark mode toggle icon and auto-invert PDFs
+    (function(){
+        function updateDarkModeToggle(theme) {
+            var icon = document.getElementById('dark-mode-icon');
+            // Sun for dark mode (to switch to light), Moon for light mode (to switch to dark)
+            if (icon) icon.textContent = (theme === 'dark') ? '☀️' : '🌙';
+        }
+        
+        function syncPdfInversionWithTheme(theme) {
+            // Auto-invert PDFs when in dark mode
+            var shouldInvert = (theme === 'dark');
+            
+            // Update PDF inversion state
+            if (typeof DocuWeaver !== 'undefined' && DocuWeaver.state) {
+                DocuWeaver.state.isPdfInverted = shouldInvert;
+                window.isPdfInverted = shouldInvert; // For backward compatibility
+            }
+            
+            // Apply the inversion
+            if (typeof applyPdfInversion === 'function') {
+                applyPdfInversion();
+            }
+            
+            // Update OSM dark mode
+            if (typeof DocuWeaver !== 'undefined' && DocuWeaver.state) {
+                DocuWeaver.state.osmDarkMode = shouldInvert;
+                window.osmDarkMode = shouldInvert; // For backward compatibility
+                
+                // Refresh OSM tiles with new theme
+                if (typeof debouncedRefreshOSM === 'function') {
+                    debouncedRefreshOSM();
+                }
+            }
+            
+            // Update canvas background color
+            if (typeof DocuWeaver !== 'undefined' && DocuWeaver.state && DocuWeaver.state.canvas) {
+                DocuWeaver.state.canvas.backgroundColor = shouldInvert ? '#2a2a2a' : '#e0e0e0';
+                DocuWeaver.state.canvas.renderAll();
+            }
+        }
+        
+        var t = localStorage.getItem('docuweaver-theme') || 'light';
+        updateDarkModeToggle(t);
+        
+        // Listen for theme changes
+        window.addEventListener('themechange', function(e) {
+            updateDarkModeToggle(e.detail.theme);
+            syncPdfInversionWithTheme(e.detail.theme);
+        });
+        
+        // Sync PDF inversion when canvas is ready
+        window.addEventListener('load', function() {
+            setTimeout(function() {
+                syncPdfInversionWithTheme(localStorage.getItem('docuweaver-theme') || 'light');
+            }, 500);
+        });
+    })();
+</script>
+{% endblock %}

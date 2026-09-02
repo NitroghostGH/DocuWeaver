@@ -1,0 +1,23 @@
+services:
+  docuweaver:
+    build: .
+    image: docuweaver:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Generate with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env or the environment}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
+      DOCUWEAVER_REQUIRE_LOGIN: ${DOCUWEAVER_REQUIRE_LOGIN:-true}
+      DOCUWEAVER_HTTPS: ${DOCUWEAVER_HTTPS:-false}
+      DOCUWEAVER_MAX_UPLOAD_MB: ${DOCUWEAVER_MAX_UPLOAD_MB:-50}
+      # First-start admin account (optional; remove after first login if you like)
+      DOCUWEAVER_ADMIN_USER: ${DOCUWEAVER_ADMIN_USER:-}
+      DOCUWEAVER_ADMIN_PASSWORD: ${DOCUWEAVER_ADMIN_PASSWORD:-}
+    volumes:
+      - docuweaver-data:/data
+    restart: unless-stopped
+
+volumes:
+  docuweaver-data:

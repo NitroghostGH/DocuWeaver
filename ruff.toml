@@ -1,0 +1,18 @@
+# Project lint configuration (keeps CI deterministic regardless of user-level ruff settings).
+line-length = 120
+target-version = "py310"
+extend-exclude = ["drawings/migrations", ".venv", "staticfiles"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # long lines: the editor templates/serializers have long help_text strings
+    "B008",  # function calls in argument defaults (Django idiom)
+    "B904",  # raise ... from err inside except (noisy in view code)
+]
+
+[lint.isort]
+known-first-party = ["docuweaver", "drawings"]
+
+[lint.per-file-ignores]
+"drawings/tests.py" = ["B017"]  # assertRaises(Exception) around DB integrity errors is intentional

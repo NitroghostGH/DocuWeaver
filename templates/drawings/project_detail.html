@@ -1,0 +1,186 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ project.name }} - DocuWeaver{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div style="margin-bottom: 1rem;">
+        <a href="{% url 'drawings:project_list' %}" style="color: var(--btn-primary);">&larr; Back to Projects</a>
+    </div>
+
+    <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2>{{ project.name }}</h2>
+                <p class="text-muted">{{ project.description }}</p>
+            </div>
+            <a href="{% url 'drawings:editor' project.pk %}" class="btn btn-success">Open Editor</a>
+        </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <!-- Sheets -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3>Sheets</h3>
+                <button class="btn" onclick="showUploadModal()">+ Upload PDF</button>
+            </div>
+
+            {% if project.sheets.all %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Page</th>
+                        <th>Z-Index</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sheet in project.sheets.all %}
+                    <tr>
+                        <td>{{ sheet.name }}</td>
+                        <td>{{ sheet.page_number }}</td>
+                        <td>{{ sheet.z_index }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted">No sheets uploaded yet.</p>
+            {% endif %}
+        </div>
+
+        <!-- Assets -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3>Assets</h3>
+                <button class="btn" onclick="showImportModal()">+ Import CSV</button>
+            </div>
+
+            <p><span class="badge badge-success">{{ project.assets.count }} total assets</span></p>
+            <p><span class="badge badge-primary">{{ project.assets.filter.count }} adjusted</span></p>
+        </div>
+    </div>
+
+    <!-- Calibration Settings -->
+    <div class="card">
+        <h3>Calibration Settings</h3>
+        <p class="text-muted" style="margin-bottom: 1rem;">These settings are configured in the Editor using the scale bar.</p>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">
+            <div>
+                <strong>Pixels per Meter:</strong><br>
+                {{ project.pixels_per_meter }}
+            </div>
+            <div>
+                <strong>Origin X:</strong><br>
+                {{ project.origin_x }} px
+            </div>
+            <div>
+                <strong>Origin Y:</strong><br>
+                {{ project.origin_y }} px
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Upload PDF Modal -->
+<div id="uploadModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-modal-overlay); z-index: 1000;">
+    <div style="background: var(--bg-modal); color: var(--text-primary); max-width: 500px; margin: 100px auto; padding: 2rem; border-radius: 8px;">
+        <h2 style="margin-bottom: 1rem;">Upload PDF Sheet</h2>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>Sheet Name</label>
+                <input type="text" name="name" required>
+            </div>
+            <div class="form-group">
+                <label>PDF File</label>
+                <input type="file" name="pdf_file" accept=".pdf" required>
+            </div>
+            <div class="form-group">
+                <label>Page Number</label>
+                <input type="number" name="page_number" value="1" min="1">
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideUploadModal()">Cancel</button>
+                <button type="submit" class="btn btn-success">Upload</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Import CSV Modal -->
+<div id="importModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-modal-overlay); z-index: 1000;">
+    <div style="background: var(--bg-modal); color: var(--text-primary); max-width: 500px; margin: 100px auto; padding: 2rem; border-radius: 8px;">
+        <h2 style="margin-bottom: 1rem;">Import Assets from CSV</h2>
+        <p class="text-muted" style="margin-bottom: 1rem;">
+            CSV must have columns: asset_id, asset_type, x, y<br>
+            Optional: name, description, and any other metadata columns
+        </p>
+        <form id="importForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>CSV File</label>
+                <input type="file" name="file" accept=".csv" required>
+            </div>
+            <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+                <button type="button" class="btn" style="background: var(--btn-secondary);" onclick="hideImportModal()">Cancel</button>
+                <button type="submit" class="btn btn-success">Import</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+const projectId = {{ project.pk }};
+
+function showUploadModal() {
+    document.getElementById('uploadModal').style.display = 'block';
+}
+
+function hideUploadModal() {
+    document.getElementById('uploadModal').style.display = 'none';
+}
+
+function showImportModal() {
+    document.getElementById('importModal').style.display = 'block';
+}
+
+function hideImportModal() {
+    document.getElementById('importModal').style.display = 'none';
+}
+
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+
+    const response = await fetch(`/api/projects/${projectId}/sheets/`, {
+        method: 'POST',
+        body: formData
+    });
+
+    if (response.ok) {
+        window.location.reload();
+    } else {
+        const error = await response.json();
+        alert('Error uploading: ' + JSON.stringify(error));
+    }
+});
+
+document.getElementById('importForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+
+    const response = await fetch(`/api/projects/${projectId}/import-csv/`, {
+        method: 'POST',
+        body: formData
+    });
+
+    const result = await response.json();
+    if (response.ok) {
+        alert(`Imported: ${result.created} created, ${result.updated} updated\nErrors: ${result.errors.length}`);
+        window.location.reload();
+    } else {
+        alert('Error: ' + result.error);
+    }
+});
+</script>
+{% endblock %}

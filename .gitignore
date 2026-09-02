@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Django / runtime data
+*.sqlite3
+*.log
+staticfiles/
+data/
+media/*
+!media/.gitkeep
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local tooling
+.github/chatmodes/
+
+# Scratch notes (never commit)
+dev_notes/
+AI_*.md
+TEMP_*.md

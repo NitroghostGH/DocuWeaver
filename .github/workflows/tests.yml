@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      DJANGO_SECRET_KEY: ci-only-secret-key
+      DJANGO_DEBUG: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check migrations are up to date
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Django system checks
+        run: python manage.py check
+
+      - name: Run tests
+        run: pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t docuweaver:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --name dw -p 8000:8000 -e DJANGO_SECRET_KEY=ci-only-secret-key docuweaver:ci
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:8000/accounts/login/; then echo "OK"; exit 0; fi
+            sleep 1
+          done
+          docker logs dw; exit 1

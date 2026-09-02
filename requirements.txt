@@ -1,0 +1,21 @@
+# DocuWeaver runtime dependencies. All packages are free and open source;
+# see README.md ("License") for the licence of each.
+
+# Web framework (5.2 is an LTS release, supported until April 2028)
+Django>=5.2,<6.0
+djangorestframework>=3.16
+
+# PDF and image processing
+PyMuPDF>=1.24
+Pillow>=10.0
+
+# Serving
+whitenoise>=6.6
+waitress>=3.0
+
+# Configuration
+python-dotenv>=1.0
+
+# Optional: stronger upload MIME sniffing. Uncomment for your platform.
+#   Windows:      python-magic-bin>=0.4.14
+#   Linux/macOS:  python-magic>=0.4.27   (needs libmagic: apt install libmagic1 / brew install libmagic)

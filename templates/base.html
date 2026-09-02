@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}DocuWeaver{% endblock %}</title>
+    <style>
+        :root {
+            --bg-body: #f5f5f5;
+            --bg-card: #ffffff;
+            --bg-input: #ffffff;
+            --bg-table-header: #f8f9fa;
+            --bg-hover: #f8f9fa;
+            --bg-modal-overlay: rgba(0,0,0,0.5);
+            --bg-modal: #ffffff;
+            --text-primary: #333;
+            --text-heading: #2c3e50;
+            --text-muted: #6c757d;
+            --border-color: #ddd;
+            --border-light: #eee;
+            --btn-primary: #3498db;
+            --btn-primary-hover: #2980b9;
+            --btn-success: #27ae60;
+            --btn-success-hover: #219a52;
+            --btn-danger: #e74c3c;
+            --btn-danger-hover: #c0392b;
+            --btn-secondary: #6c757d;
+            --badge-primary-bg: #e3f2fd;
+            --badge-primary-text: #1976d2;
+            --badge-success-bg: #e8f5e9;
+            --badge-success-text: #388e3c;
+            --shadow-card: 0 2px 4px rgba(0,0,0,0.1);
+            --focus-color: #3498db;
+        }
+        [data-theme="dark"] {
+            --bg-body: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-input: #1a2744;
+            --bg-table-header: #1a1a2e;
+            --bg-hover: #1a2744;
+            --bg-modal-overlay: rgba(0,0,0,0.7);
+            --bg-modal: #16213e;
+            --text-primary: #e0e0e0;
+            --text-heading: #e8e8e8;
+            --text-muted: #9e9e9e;
+            --border-color: #333355;
+            --border-light: #2a2a4a;
+            --badge-primary-bg: #1a3a5c;
+            --badge-primary-text: #64b5f6;
+            --badge-success-bg: #1b3a2a;
+            --badge-success-text: #66bb6a;
+            --shadow-card: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        select {
+            background-color: var(--bg-input);
+            color: var(--text-primary);
+        }
+        select option {
+            background-color: var(--bg-card);
+            color: var(--text-primary);
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-body);
+            color: var(--text-primary);
+        }
+        .navbar {
+            background: #2c3e50;
+            color: white;
+            padding: 0.4rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .navbar .nav-link-btn {
+            background: none;
+            border: none;
+            color: inherit;
+            font: inherit;
+            cursor: pointer;
+            padding: 0;
+            margin-left: 1rem;
+            opacity: 0.8;
+            transition: opacity 0.2s;
+        }
+        .navbar .nav-link-btn:hover { opacity: 1; }
+        .navbar a {
+            color: white;
+            text-decoration: none;
+        }
+        .navbar h1 {
+            font-size: 1.1rem;
+        }
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .nav-links a {
+            margin-left: 1rem;
+            opacity: 0.8;
+            transition: opacity 0.2s;
+        }
+        .nav-links a:hover {
+            opacity: 1;
+        }
+        .theme-toggle-btn {
+            background: none;
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            line-height: 1;
+        }
+        .theme-toggle-btn:hover {
+            border-color: rgba(255,255,255,0.6);
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: var(--btn-primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+        .btn:hover {
+            background: var(--btn-primary-hover);
+        }
+        .btn-success {
+            background: var(--btn-success);
+        }
+        .btn-success:hover {
+            background: var(--btn-success-hover);
+        }
+        .btn-danger {
+            background: var(--btn-danger);
+        }
+        .btn-danger:hover {
+            background: var(--btn-danger-hover);
+        }
+        .card {
+            background: var(--bg-card);
+            border-radius: 8px;
+            box-shadow: var(--shadow-card);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .card h2 {
+            margin-bottom: 1rem;
+            color: var(--text-heading);
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 1rem;
+            background: var(--bg-input);
+            color: var(--text-primary);
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--focus-color);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-light);
+        }
+        th {
+            background: var(--bg-table-header);
+            font-weight: 600;
+        }
+        tr:hover {
+            background: var(--bg-hover);
+        }
+        .text-muted {
+            color: var(--text-muted);
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-primary {
+            background: var(--badge-primary-bg);
+            color: var(--badge-primary-text);
+        }
+        .badge-success {
+            background: var(--badge-success-bg);
+            color: var(--badge-success-text);
+        }
+    </style>
+    <script>
+    (function(){
+        var t = localStorage.getItem('docuweaver-theme') || 'light';
+        if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    })();
+    </script>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <h1><a href="{% url 'drawings:project_list' %}" title="DocuWeaver {{ DOCUWEAVER_VERSION }}">DocuWeaver</a></h1>
+        <div class="nav-links">
+            <button id="theme-toggle" class="theme-toggle-btn" onclick="toggleTheme()" title="Toggle dark mode"></button>
+            <a href="{% url 'drawings:project_list' %}">Projects</a>
+            {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+            {% if user.is_authenticated %}
+            <form method="post" action="{% url 'logout' %}" style="display: inline;">
+                {% csrf_token %}
+                <button type="submit" class="nav-link-btn" title="Signed in as {{ user.get_username }}">Sign out ({{ user.get_username }})</button>
+            </form>
+            {% elif REQUIRE_LOGIN %}
+            <a href="{% url 'login' %}">Sign in</a>
+            {% else %}
+            <a href="{% url 'admin:index' %}">Admin</a>
+            {% endif %}
+        </div>
+    </nav>
+    {% block content %}{% endblock %}
+    {% block extra_js %}{% endblock %}
+    <script>
+    function toggleTheme() {
+        var html = document.documentElement;
+        var next = (html.getAttribute('data-theme') === 'dark') ? 'light' : 'dark';
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('docuweaver-theme', next);
+        updateThemeIcon(next);
+        window.dispatchEvent(new CustomEvent('themechange', { detail: { theme: next } }));
+    }
+    function updateThemeIcon(theme) {
+        var btn = document.getElementById('theme-toggle');
+        if (btn) btn.textContent = (theme === 'dark') ? '\u2600' : '\u263D';
+    }
+    (function(){
+        var t = localStorage.getItem('docuweaver-theme') || 'light';
+        updateThemeIcon(t);
+    })();
+    </script>
+</body>
+</html>
