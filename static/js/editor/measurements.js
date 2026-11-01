@@ -839,10 +839,58 @@
         refreshConfigTypesList();
         console.log('Deleted config type:', key);
     }
-    
+
+    // ==================== Measurement Selection ====================
+    // In select mode a saved measurement can be clicked on the canvas
+    // (canvas_init.js handleSelectionCreated → selectMeasurement); Delete or
+    // Backspace then removes it (canvas_init.js → deleteSelectedMeasurement).
+    // main.js clearSelection resets state.selectedMeasurementId and the highlight.
+
+    function selectMeasurement(msId) {
+        state.selectedMeasurementId = msId;
+        const ms = MeasurementTool.getSavedMeasurements().find(m => m.id === msId);
+        if (ms) {
+            DW.showToast(`Selected: ${ms.name || 'Measurement'} - press Delete to remove`, 'info');
+        }
+        highlightMeasurementInSidebar(msId);
+    }
+
+    function highlightMeasurementInSidebar(msId) {
+        document.querySelectorAll('.folder-item-entry.selected-measurement').forEach(el => {
+            el.classList.remove('selected-measurement');
+        });
+        const itemEl = document.querySelector(
+            `.folder-item-entry[data-item-id="${msId}"][data-item-type="measurement"]`
+        );
+        if (itemEl) {
+            itemEl.classList.add('selected-measurement');
+            itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
+
+    async function deleteSelectedMeasurement() {
+        const msId = state.selectedMeasurementId;
+        if (!msId) return;
+        const ms = MeasurementTool.getSavedMeasurements().find(m => m.id === msId);
+        if (!ms) return;
+
+        // MeasurementTool.delete asks for confirmation, redraws the canvas and
+        // shows the result toast.
+        const deleted = await MeasurementTool.delete(msId, ms.name || 'Unnamed');
+        if (deleted) {
+            state.selectedMeasurementId = null;
+            state.canvas.discardActiveObject();
+            state.canvas.requestRenderAll();
+            if (typeof renderLayerGroupsUI === 'function') renderLayerGroupsUI();
+        }
+    }
+
     // ==================== Public API ====================
-    
+
     DW.measurements = {
+        selectMeasurement,
+        highlightMeasurementInSidebar,
+        deleteSelectedMeasurement,
         calcMeasureDistance,
         formatMeasureDistance,
         bringMeasurementsToFront,
@@ -916,6 +964,9 @@
     window.onMeasureConfigTypeChange = onMeasureConfigTypeChange;
     window.populateConfigTypeSelect = populateConfigTypeSelect;
     window.updateConfigPreviewBar = updateConfigPreviewBar;
+    window.selectMeasurement = selectMeasurement;
+    window.highlightMeasurementInSidebar = highlightMeasurementInSidebar;
+    window.deleteSelectedMeasurement = deleteSelectedMeasurement;
 
     console.log('DocuWeaver measurements module loaded');
 })();

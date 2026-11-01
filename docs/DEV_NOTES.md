@@ -1,123 +1,122 @@
 # DocuWeaver Development Notes
 
-This file tracks development notes, migration plans, and technical debt.
+Technical notes for people working on the code: how the canvas editor is put
+together, known defects, and design decisions that aren't obvious from the
+source. Installation and usage are in `README.md`; the current project state
+and next steps are in `STATUS.md`.
+
+_Last reviewed: 2026-11-01_
 
 ---
 
-## 2026-02-23: canvas_editor.js Migration Plan
+## Canvas editor architecture
 
-**Goal:** Remove the monolithic `canvas_editor.js` (~8000 lines, ~170 functions) by migrating remaining functions to modular files in `static/js/editor/`.
+The editor page is `templates/drawings/editor.html`. It loads plain scripts (no
+bundler, no ES modules) in this order, and **the order in `editor.html` is the
+source of truth**:
 
-### Current Status
-- **~77 functions** already duplicated/exported in modular files
-- **~93 functions** still ONLY in `canvas_editor.js`
+1. `static/js/vendor/fabric.min.js`: Fabric.js 5.3.1, vendored (MIT).
+2. An inline script that defines `PROJECT_ID` and `PROJECT_DATA` from the template context.
+3. `static/js/tool_section_item.js` and `static/js/measurement_tool.js`: standalone helpers (`MeasurementTool`).
+4. `static/js/editor/namespace.js`: creates `window.DocuWeaver` and the shared `DocuWeaver.state`, and patches Fabric's `textBaseline` bug. Must load first among the editor modules.
+5. Editor modules in `static/js/editor/`: `undo`, `viewport`, `tools`, `canvas_init`, `crop`, `split`, `calibration`, `assets`, `links`, `sheets`, `osm`, `measurements`, `layers` (folders/layer groups), `imports`, `sidebar`, then `main.js` (startup).
+6. `static/js/editor/verify.js`: a self-check that logs to the browser console (see below).
+7. An inline script that syncs dark mode with PDF inversion and OSM tiles.
 
-### Functions NOT yet migrated (grouped by feature):
+Conventions:
 
-#### 1. Import/Upload UI (~10 functions) → `editor/import.js`
-- `toggleImportDropdown`, `closeImportDropdown`, `showUploadModal`, `hideUploadModal`
-- `showImportModal`, `hideImportModal`, `importStepBack`
-- `showImportLinksModal`, `hideImportLinksModal`, `importLinksStepBack`
-- `toggleAssetTypeMode`
+- Each module is an IIFE that reads and writes `DocuWeaver.state` and attaches
+  its public functions to `window.*`. The `window.*` exports exist because
+  `editor.html` uses inline `onclick`/`onchange` handlers by name.
+- Cross-module calls are usually guarded with `if (typeof fn === 'function')`.
+  This means **a missing function fails silently** instead of throwing. When
+  you rename or move a function, grep for its name across `static/js` and
+  `templates`.
+- `verify.js` checks that the expected modules, `window.*` functions and
+  `state` keys exist, and prints a pass/fail summary in the DevTools console
+  on every editor page load. It is the quickest way to spot a dropped
+  function, and it should report no failures. When you add a function that
+  another module or `editor.html` calls, add it to `verify.js` too.
+- The load-order comment at the top of `namespace.js` is out of date (it lists
+  a `modals.js` that doesn't exist). Trust `editor.html`.
+- `static/js/canvas_core.js` isn't loaded by any template. It's a leftover
+  from before the module split and can be deleted.
 
-#### 2. Calibration/Verification Panel (~15 functions) → `editor/calibration.js`
-- `handleCalibrationClick`, `hideCalibrateModal`, `drawOriginMarker`
-- `toggleVerifyPanel`, `filterVerifyAssetSelect`, `expandVerifyAssetList`, `collapseVerifyAssetList`
-- `onVerifyAssetSelected`, `updateVerifyRefInfo`, `handleVerifyClick`, `drawVerifyRefMarker`
-- `onVerifyRotationChange`, `setAssetRotation`, `debouncedSaveAssetCalibration`, `onCoordUnitChange`
+### History: the canvas_editor.js split (finished)
 
-#### 3. Sheet Cropping/Cutting (~15 functions) → `editor/cropping.js`
-- `handleCropClick`, `handleCropMove`, `handleCropEnd`
-- `applyCutMask`, `clipPolygonByEdge`, `computeMultiCutPolygon`, `applyAllCuts`
-- `applyCutMaskWithDirection`, `clearSheetCut`, `clearSelectedSheetCut`
-- `flipSelectedSheetCut`, `toggleShowUncut`, `updateCutStats`, `removeCutStats`
+The editor used to be one ~8,100-line `static/js/canvas_editor.js`. It was
+split into `static/js/editor/*` and deleted in the upstream repo
+(jpmarshTMR/DocuWeaver, commit `db9d382`, 2026-02-24). The last version of the
+old file is at commit `f50e817` in that repo:
 
-#### 4. Sheet Splitting (~3 functions) → `editor/cropping.js`
-- `handleSplitClick`, `handleSplitMove`
+```
+gh api -H "Accept: application/vnd.github.raw" \
+  "repos/jpmarshTMR/DocuWeaver/contents/static/js/canvas_editor.js?ref=f50e8177658063a2705d4400861997c1270df9c2"
+```
 
-#### 5. Canvas Setup (~5 functions) → Already in `editor/canvas_init.js`
-- `initCanvas`, `setupCanvasEvents`, `setupKeyboardShortcuts`
-- Note: canvas_editor.js may override these - need to verify and consolidate
-
-#### 6. Layer Groups/Folders UI (~20 functions) → `editor/folders.js`
-- `showCreateGroupModal`, `hideCreateGroupModal`, `renderLayerGroupsUI`
-- `getAllGlobalGroups`, `flattenGroupHierarchy`, `getGroupItemCountForType`, `isDescendantOf`
-- `toggleUnifiedFolderView`, `renderUnifiedList`, `renderUnifiedFlatView`, `renderUnifiedFolderView`
-- `createUnifiedFolderSection`, `renderAssetGroupList`, `renderLinkGroupList`, `renderSheetGroupList`
-- `createSheetItem`, `createUngroupedFolder`, `createGroupItem`, `createFolderItemElement`
-- `showFolderSettingsMenu`, `showMoveGroupDialog`, `showJoinGroupDialog`
-
-#### 7. Sidebar/UI Controls (~5 functions) → `editor/sidebar.js`
-- `toggleLeftSidebar`, `toggleRightSidebar`, `resizeCanvasToFit`
-- `showTab`, `showBatchTypeSelect`
-
-#### 8. Misc (~10 functions)
-- `saveUndoState` → `editor/undo.js` (future)
-- `downloadReport` → `editor/export.js` (future)
-- `selectMeasurement`, `highlightMeasurementInSidebar` → `editor/measurements.js`
-- OSM tile caching (already mostly in `editor/osm.js`, verify consolidation):
-  - `loadOSMTile`, `addOSMTileToCanvas`, `getOSMCacheKey`, `storeOSMTileInCache`, `pruneOSMTileCache`
-
-### Migration Steps
-1. Create new module file with IIFE pattern matching existing modules
-2. Move functions from canvas_editor.js to new module
-3. Export to `window.*` for backward compatibility
-4. Test thoroughly
-5. Remove duplicated code from canvas_editor.js
-6. Repeat until canvas_editor.js is empty
-7. Remove canvas_editor.js from editor.html
-
-### Priority Order
-1. `editor/folders.js` - Most complex, highest value
-2. `editor/calibration.js` - Important for workflows
-3. `editor/cropping.js` - Sheet manipulation
-4. `editor/import.js` - Modal handling
-5. `editor/sidebar.js` - Simple UI controls
+Several functions were dropped or miswired during the split; they were
+restored on 2026-11-01 (see below).
 
 ---
 
-## 2026-02-23: Folder Move Dialog Fix
+## Fixed 2026-11-01: functions lost in the split
 
-**Issue:** When selecting "Move to another folder" on a folder that only contains nested empty subfolders, no options appeared.
+Between the split (2026-02-24) and 2026-11-01 these editor actions silently
+did nothing, because the functions they call had been dropped and the calls
+are behind `typeof` guards (or threw `ReferenceError` from inline handlers):
 
-**Root Cause:** The dialog was filtering out descendant folders (correct for preventing circular references) but then showed "No folders available" even when root-level was a valid option.
+| Action | Was broken because | Now handled by |
+|---|---|---|
+| Drag or rotate a sheet on the canvas | `updateSheetPositionFromCanvas` / `updateSheetRotationFromCanvas` missing, so nothing was saved and a reload lost the alignment | `saveSheetTransformFromCanvas` in `sheets.js` |
+| Drag an asset on the canvas | `updateAssetPositionFromCanvas` and `saveAssetAdjustment` missing | same names, in `assets.js` |
+| Type Adjusted X/Y, click "Save Adjustment" | `updateAssetPosition` (never existed) and `saveAssetAdjustment` missing | same names, in `assets.js` |
+| Click a measurement, press Delete | `selectMeasurement`, `highlightMeasurementInSidebar`, `deleteSelectedMeasurement` missing | same names, in `measurements.js` |
+| Split tool | canvas events went to a stub in `tools.js` that called a nonexistent `performSheetSplit` | `canvas_init.js` now calls `DW.split.*` (`split.js`); the stub was deleted |
 
-**Fix:** 
-- Root level option now only shown when the folder has a parent (isn't already at root)
-- Improved error message when truly no options available
-- Fixed index calculation when root option is conditionally included
+Design points worth keeping:
 
-**Note on Moving Folders into Child Folders:**
-This is intentionally NOT supported because it would create a circular reference. If a user wants to reorganize:
-1. Move the child folder to root level first
-2. Then move the parent folder into what was its child
+- `saveSheetTransformFromCanvas` sends position and rotation in **one** PATCH,
+  and only the fields that changed. Two concurrent PATCHes lose an update,
+  because the sheet API writes back every field of the row.
+- Dragging an asset saves immediately (one `AdjustmentLog` entry per drag).
+  Typing in Adjusted X/Y only moves the marker until "Save Adjustment" is
+  clicked. The Notes field belongs to the next adjustment and is cleared after
+  each save. Coordinates are written with 8 decimals for degree-based
+  projects (`degrees`, `gda94_geo`) and 3 for metres, about 1 mm either way.
+- `verify.js` reported 7 failures before the fix and reports 115/115 after.
 
----
+Verified 2026-11-01 with a Playwright script (headless Chromium against a
+scratch database, not checked in). It drove each action above and checked
+the network requests and the database. All 15 checks failed on the old code
+and passed after the fix.
 
-## 2026-02-23: Added "Move contents to..." Feature
+### Remaining tech debt
 
-**Request:** User wanted to move the CONTENTS (items) of a folder into a subfolder, not move the folder itself.
-
-**Solution:** Added new menu option "Move contents to..." which:
-- Shows ALL folders including subfolders of the source folder (valid targets for items)
-- Marks subfolders with ⬇️ indicator for clarity
-- Includes "Ungrouped" option to remove items from any folder
-- Keeps the original folder intact (just empties it)
-
-**Changes:**
-- `canvas_editor.js`: Added `showMoveContentsDialog()` and `moveContentsToFolder()` functions
-- `api_views.py`: Added `move_contents_to_folder()` endpoint
-- `api_urls.py`: Added route `layer-groups/<int:pk>/move-contents/`
-
-**Menu now has:**
-- "Move folder to..." - Moves the folder itself to another parent (can't move into descendants)
-- "Move contents to..." - Moves items inside the folder to any other folder (including subfolders)
-
-**Context-aware behavior:**
-- When in Measurements tab → only moves measurements (dialog shows "Move measurements from...")
-- When in Assets tab → only moves assets
-- When in Unified view → moves all item types
-- This prevents users from accidentally moving items they can't see in the current view
+`tools.js` still has its own copies of the crop, calibrate, origin, verify and
+measure click handlers, and canvas events go to those (`DW.tools.*`). The
+same-named functions in `crop.js`, `calibration.js` and `measurements.js` are
+exported on `window` but the canvas never calls them. The copies currently
+behave the same (crop saves through `applyCutMask` → `saveCutData`;
+calibrate, origin and verify save through the same endpoints). Pick one copy
+of each and delete the other before they drift apart.
 
 ---
 
+## Layer folders: moving folders vs moving contents
+
+Folder menus (`showFolderSettingsMenu` in `static/js/editor/layers.js`) offer
+two different moves:
+
+- **Move folder to…** (`showMoveGroupDialog`) moves the folder itself under
+  another parent. Descendants of the folder are filtered out, because moving
+  a folder into its own child would create a cycle. The "root level" option
+  only appears when the folder isn't already at the root. To put a parent
+  inside what was its child, first move the child to the root, then move the
+  parent into it.
+- **Move contents to…** (`showMoveContentsDialog` / `moveContentsToFolder`)
+  moves the items inside a folder and leaves the folder in place, now empty.
+  The folder's own subfolders are valid targets (marked ⬇️), as is "Ungrouped".
+  Only items of the type being viewed are moved (assets, measurements, etc.),
+  so users don't move items they can't see. Backed by
+  `POST /api/layer-groups/<id>/move-contents/` (`move_contents_to_folder` in
+  `drawings/api_views.py`).

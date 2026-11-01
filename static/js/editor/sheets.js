@@ -301,6 +301,58 @@
             console.error('Error saving sheet position:', error);
         }
     }
+
+    // ==================== Canvas → Server Sync ====================
+
+    /**
+     * Save a sheet's position and/or rotation after it was moved or rotated on
+     * the canvas (called by canvas_init.js handleObjectModified). Only changed
+     * fields are sent, in a single PATCH: two concurrent PATCHes can lose an
+     * update, because the server writes back every field of the sheet.
+     */
+    async function saveSheetTransformFromCanvas(obj) {
+        if (!obj || !obj.sheetData) return;
+        const sheetId = obj.sheetData.id;
+        const sheet = state.sheets.find(s => s.id === sheetId);
+
+        const data = {};
+        if (!sheet || sheet.offset_x !== obj.left || sheet.offset_y !== obj.top) {
+            data.offset_x = obj.left;
+            data.offset_y = obj.top;
+        }
+        if (!sheet || sheet.rotation !== obj.angle) {
+            data.rotation = obj.angle;
+        }
+        if (Object.keys(data).length === 0) return;
+
+        try {
+            const response = await fetch(`/api/sheets/${sheetId}/`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': DW.getCSRFToken()
+                },
+                body: JSON.stringify(data)
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            }
+
+            const updated = await response.json();
+            const index = state.sheets.findIndex(s => s.id === sheetId);
+            if (index >= 0) state.sheets[index] = updated;
+            if (state.selectedSheet && state.selectedSheet.id === sheetId) {
+                state.selectedSheet = updated;
+                window.selectedSheet = updated;
+                document.getElementById('sheet-offset-x').value = updated.offset_x;
+                document.getElementById('sheet-offset-y').value = updated.offset_y;
+                document.getElementById('sheet-rotation').value = updated.rotation;
+            }
+        } catch (error) {
+            console.error('Error saving sheet position:', error);
+            DW.showToast('Could not save the sheet position', 'error');
+        }
+    }
     
     // ==================== Sheet Deletion ====================
     
@@ -560,6 +612,7 @@
         updateSheetOnCanvas,
         saveSheetRotation,
         saveSheetPosition,
+        saveSheetTransformFromCanvas,
         deleteSelectedSheet,
         deleteSheet,
         renderPdfLayersUI,
@@ -577,6 +630,7 @@
     window.updateSheetOnCanvas = updateSheetOnCanvas;
     window.saveSheetRotation = saveSheetRotation;
     window.saveSheetPosition = saveSheetPosition;
+    window.saveSheetTransformFromCanvas = saveSheetTransformFromCanvas;
     window.deleteSelectedSheet = deleteSelectedSheet;
     window.deleteSheet = deleteSheet;
     window.renderPdfLayersUI = renderPdfLayersUI;

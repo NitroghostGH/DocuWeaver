@@ -111,9 +111,9 @@
         // Selection / Data
         'clearSelection', 'updateContextTools',
         'loadProjectData', 'selectMeasurement',
+        'highlightMeasurementInSidebar', 'deleteSelectedMeasurement',
         'updateAssetPositionFromCanvas',
-        'updateSheetPositionFromCanvas',
-        'updateSheetRotationFromCanvas',
+        'saveSheetTransformFromCanvas',
         'saveAssetAdjustment',
         'updateAssetPosition',
 
@@ -151,7 +151,8 @@
         'selectedSheet', 'selectedAsset', 'isPdfInverted',
         'sheetCutData', 'undoStack', 'osmEnabled', 'osmOpacity',
         'osmZIndex', 'osmDarkMode', 'assetRotationDeg',
-        'showUncutSheetId', 'selectedMeasurementId', 'layerGroups'
+        'showUncutSheetId', 'selectedMeasurementId',
+        'assetGroups', 'linkGroups', 'sheetGroups', 'measurementGroups'
     ];
 
     if (DW && DW.state) {

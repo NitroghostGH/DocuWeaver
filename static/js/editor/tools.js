@@ -2,8 +2,10 @@
  * DocuWeaver Canvas Editor - Tools Module
  * 
  * Handles tool modes and tool-specific click/move/end handlers.
- * Includes: pan, select, crop, split, calibrate, origin, verify-asset, measure
- * 
+ * Includes: pan, select, crop, calibrate, origin, verify-asset, measure.
+ * setMode also switches to split mode, but the split handlers live in split.js
+ * (canvas_init.js calls DW.split.* directly).
+ *
  * Depends on: namespace.js
  */
 
@@ -206,78 +208,6 @@
         }
     }
     
-    // ==================== Split Tool ====================
-    
-    function handleSplitClick(opt) {
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        // Find sheet under click
-        let clickedSheetObj = findSheetAtPoint(opt, pointer);
-        
-        if (!state.isSplitting) {
-            if (clickedSheetObj) {
-                state.isSplitting = true;
-                state.splitTargetSheet = clickedSheetObj;
-                state.splitLineStart = pointer;
-                
-                state.splitLine = new fabric.Line(
-                    [pointer.x, pointer.y, pointer.x, pointer.y],
-                    {
-                        stroke: '#9b59b6',
-                        strokeWidth: 3,
-                        strokeDashArray: [8, 4],
-                        selectable: false,
-                        evented: false
-                    }
-                );
-                canvas.add(state.splitLine);
-            }
-        }
-    }
-    
-    function handleSplitMove(opt) {
-        if (!state.isSplitting || !state.splitLine || !state.splitLineStart) return;
-        
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        state.splitLine.set({ x2: pointer.x, y2: pointer.y });
-        
-        if (typeof updateCutStats === 'function') {
-            updateCutStats(state.splitLineStart, pointer);
-        }
-        
-        canvas.renderAll();
-    }
-    
-    async function handleSplitEnd(opt) {
-        if (!state.isSplitting || !state.splitLine || !state.splitLineStart || !state.splitTargetSheet) return;
-        
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        // Calculate line length
-        const dx = pointer.x - state.splitLineStart.x;
-        const dy = pointer.y - state.splitLineStart.y;
-        const lineLength = Math.sqrt(dx * dx + dy * dy);
-        
-        if (lineLength > 20 && typeof performSheetSplit === 'function') {
-            await performSheetSplit(state.splitTargetSheet, state.splitLineStart, pointer);
-        }
-        
-        // Clean up
-        canvas.remove(state.splitLine);
-        state.splitLine = null;
-        state.splitLineStart = null;
-        state.splitTargetSheet = null;
-        state.isSplitting = false;
-        
-        if (typeof removeCutStats === 'function') {
-            removeCutStats();
-        }
-    }
-    
     // ==================== Calibration Tool ====================
     
     function handleCalibrationClick(opt) {
@@ -449,9 +379,6 @@
         handleCropClick,
         handleCropMove,
         handleCropEnd,
-        handleSplitClick,
-        handleSplitMove,
-        handleSplitEnd,
         handleCalibrationClick,
         handleOriginClick,
         handleVerifyClick,

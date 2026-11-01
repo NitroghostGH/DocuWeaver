@@ -373,8 +373,92 @@
         }
     }
     
+    // ==================== Asset Adjustment ====================
+    // The Adjusted X/Y fields in the properties panel hold the selected asset's
+    // position in project coordinates. Dragging the asset on the canvas updates
+    // them (updateAssetPositionFromCanvas) and then saves (canvas_init.js calls
+    // saveAssetAdjustment on object:modified). Typing in them moves the marker
+    // (updateAssetPosition) until "Save Adjustment" is clicked.
+
+    function findAssetObject(assetId) {
+        return state.canvas.getObjects().find(obj => obj.assetData && obj.assetData.id === assetId);
+    }
+
+    function formatAssetCoord(value) {
+        // 8 decimals of a degree and 3 decimals of a metre are both about 1 mm.
+        const isDegrees = ['degrees', 'gda94_geo'].includes(PROJECT_DATA.coord_unit);
+        return value.toFixed(isDegrees ? 8 : 3);
+    }
+
+    function updateAssetPositionFromCanvas(obj) {
+        if (!obj || !obj.assetData) return;
+        if (!state.selectedAsset || state.selectedAsset.id !== obj.assetData.id) return;
+
+        const pos = pixelToAssetMeter(obj.left, obj.top);
+        document.getElementById('asset-adj-x').value = formatAssetCoord(pos.x);
+        document.getElementById('asset-adj-y').value = formatAssetCoord(pos.y);
+    }
+
+    function updateAssetPosition() {
+        const asset = state.selectedAsset;
+        if (!asset) return;
+
+        const x = parseFloat(document.getElementById('asset-adj-x').value);
+        const y = parseFloat(document.getElementById('asset-adj-y').value);
+        const obj = findAssetObject(asset.id);
+        if (!isFinite(x) || !isFinite(y) || !obj) return;
+
+        const pos = assetMeterToPixel(x, y);
+        obj.set({ left: pos.x, top: pos.y });
+        obj.setCoords();
+        state.canvas.requestRenderAll();
+    }
+
+    async function saveAssetAdjustment() {
+        const asset = state.selectedAsset;
+        if (!asset) return;
+
+        const x = parseFloat(document.getElementById('asset-adj-x').value);
+        const y = parseFloat(document.getElementById('asset-adj-y').value);
+        if (!isFinite(x) || !isFinite(y)) {
+            DW.showToast('Adjusted X and Y must be numbers', 'warning');
+            return;
+        }
+        const notesEl = document.getElementById('asset-notes');
+
+        try {
+            const response = await fetch(`/api/assets/${asset.id}/adjust/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': DW.getCSRFToken()
+                },
+                body: JSON.stringify({ x, y, notes: notesEl ? notesEl.value : '' })
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            }
+
+            const updated = await response.json();
+            const index = state.assets.findIndex(a => a.id === updated.id);
+            if (index >= 0) state.assets[index] = updated;
+            if (notesEl) notesEl.value = '';
+
+            // Redraw from the saved coordinates. Removing the old marker clears
+            // the selection, so re-select the asset if it's still the one shown.
+            const stillSelected = state.selectedAsset && state.selectedAsset.id === updated.id;
+            refreshAssets();
+            if (stillSelected) selectAsset(updated.id);
+
+            DW.showToast('Asset adjustment saved', 'success');
+        } catch (error) {
+            console.error('Error saving asset adjustment:', error);
+            DW.showToast('Error saving asset adjustment', 'error');
+        }
+    }
+
     // ==================== Asset Visibility ====================
-    
+
     function toggleAssetVisibility(assetId, visible) {
         const asset = state.assets.find(a => a.id === assetId);
         if (asset) {
@@ -476,6 +560,9 @@
         createAssetShape,
         createStarPoints,
         selectAsset,
+        updateAssetPositionFromCanvas,
+        updateAssetPosition,
+        saveAssetAdjustment,
         toggleAssetVisibility,
         refreshAssets,
         clearAssetsFromCanvas,
@@ -492,6 +579,9 @@
     window.createAssetShape = createAssetShape;
     window.createStarPoints = createStarPoints;
     window.selectAsset = selectAsset;
+    window.updateAssetPositionFromCanvas = updateAssetPositionFromCanvas;
+    window.updateAssetPosition = updateAssetPosition;
+    window.saveAssetAdjustment = saveAssetAdjustment;
     window.toggleAssetVisibility = toggleAssetVisibility;
     window.refreshAssets = refreshAssets;
     window.clearAssetsFromCanvas = clearAssetsFromCanvas;

@@ -192,7 +192,7 @@
                 DW.tools.handleCropClick(opt);
                 break;
             case 'split':
-                DW.tools.handleSplitClick(opt);
+                DW.split.handleSplitClick(opt);
                 break;
             case 'calibrate':
                 DW.tools.handleCalibrationClick(opt);
@@ -240,7 +240,7 @@
         } else if (state.currentMode === 'crop' && state.isCropping) {
             DW.tools.handleCropMove(opt);
         } else if (state.currentMode === 'split' && state.isSplitting) {
-            DW.tools.handleSplitMove(opt);
+            DW.split.handleSplitMove(opt);
         } else if (state.currentMode === 'measure') {
             const now = performance.now();
             if (now - lastMeasureMoveTime >= MEASURE_MOVE_THROTTLE_MS) {
@@ -273,7 +273,7 @@
         } else if (state.currentMode === 'crop') {
             DW.tools.handleCropEnd(opt);
         } else if (state.currentMode === 'split') {
-            DW.tools.handleSplitEnd(opt);
+            DW.split.handleSplitEnd(opt);
         }
     }
     
@@ -351,11 +351,8 @@
         
         // Save changes
         if (obj.sheetData) {
-            if (typeof updateSheetPositionFromCanvas === 'function') {
-                updateSheetPositionFromCanvas(obj);
-            }
-            if (typeof updateSheetRotationFromCanvas === 'function') {
-                updateSheetRotationFromCanvas(obj);
+            if (typeof saveSheetTransformFromCanvas === 'function') {
+                saveSheetTransformFromCanvas(obj);
             }
         } else if (obj.assetData) {
             if (typeof saveAssetAdjustment === 'function') {
