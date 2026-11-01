@@ -4,6 +4,21 @@ All notable changes to DocuWeaver are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-11-01
+
+Fixes canvas editor actions that had silently stopped working when the editor
+was split into separate modules, before 1.0.0.
+
+### Fixed
+- Moving or rotating a sheet on the canvas was not saved, so the alignment was lost on reload.
+- Dragging an asset on the canvas, or clicking "Save Adjustment" in the asset panel, did not record the adjustment. Typing in Adjusted X/Y now also moves the marker before you save.
+- Clicking a saved measurement did not select it, and the Delete key did not remove it.
+- The split tool drew a cut line but never split the sheet.
+- Running the test suite left uploaded test files in the real `media/` directory.
+
+### Changed
+- CI uses `actions/checkout@v7` and `actions/setup-python@v7` (Node 24 runtime).
+
 ## [1.0.0] - 2026-09-02
 
 First public release, prepared for distribution as free and open-source software.
