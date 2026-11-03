@@ -13,94 +13,85 @@
     const state = DW.state;
     
     // ==================== Sheet Rendering ====================
-    
+
+    // Bumped on every full redraw. An image that finishes loading after a
+    // newer redraw started is dropped, or a quick second loadProjectData()
+    // would leave two copies of a sheet.
+    let renderGeneration = 0;
+
+    /**
+     * Set up a loaded sheet image: position, interaction, dark-mode filter,
+     * cut masks and visibility. Used for the first draw, after a PDF layer
+     * change and after a split.
+     */
+    function setupSheetImage(img, sheet) {
+        const isSelectMode = state.currentMode === 'select';
+        const isCropOrSplitMode = state.currentMode === 'crop' || state.currentMode === 'split';
+        img.set({
+            left: sheet.offset_x,
+            top: sheet.offset_y,
+            angle: sheet.rotation,
+            selectable: isSelectMode,
+            evented: isSelectMode || isCropOrSplitMode,
+            hoverCursor: isCropOrSplitMode ? 'crosshair' : 'move',
+            hasControls: false,
+            hasBorders: false,
+            lockScalingX: true,
+            lockScalingY: true,
+            lockUniScaling: true,
+            lockRotation: false,
+        });
+        img.sheetData = sheet;
+        if (state.isPdfInverted && typeof setSheetInversion === 'function') {
+            setSheetInversion(img, true);
+        }
+        if (sheet.cuts_json && sheet.cuts_json.length > 0) {
+            state.sheetCutData[sheet.id] = sheet.cuts_json;
+            if (typeof applyAllCuts === 'function') applyAllCuts(img, sheet.cuts_json);
+        }
+        img.visible = typeof isItemShown === 'function' ? isItemShown(sheet, 'sheet') : sheet.visible !== false;
+        return img;
+    }
+
     function renderSheetsOnCanvas() {
         const canvas = state.canvas;
-        const sheets = state.sheets;
+        const generation = ++renderGeneration;
 
         // Remove existing sheet objects to prevent duplicates on reload
-        const existingSheetObjs = canvas.getObjects().filter(obj => obj.sheetData);
-        existingSheetObjs.forEach(obj => canvas.remove(obj));
+        canvas.getObjects().filter(obj => obj.sheetData).forEach(obj => canvas.remove(obj));
 
-        const sheetsToLoad = sheets.filter(s => s.rendered_image_url).length;
-        let sheetsLoaded = 0;
-
-        sheets.forEach((sheet, index) => {
-            if (sheet.rendered_image_url) {
-                fabric.Image.fromURL(sheet.rendered_image_url, function(img) {
-                    let left = sheet.offset_x;
-                    let top = sheet.offset_y;
-                    if (left === 0 && top === 0 && index > 0) {
-                        left = index * 50;
-                        top = index * 50;
-                    }
-
-                    img.set({
-                        left: left,
-                        top: top,
-                        angle: sheet.rotation,
-                        selectable: state.currentMode === 'select',
-                        evented: true,
-                        hasControls: false,
-                        hasBorders: false,
-                        lockScalingX: true,
-                        lockScalingY: true,
-                        lockUniScaling: true,
-                        lockRotation: false,
-                    });
-                    img.sheetData = sheet;
-                    canvas.add(img);
-
-                    // Apply PDF inversion if active
-                    if (state.isPdfInverted) {
-                        if (!img.filters) img.filters = [];
-                        img.filters.push(new fabric.Image.filters.Invert());
-                        if (typeof applyFiltersPreservingSize === 'function') {
-                            applyFiltersPreservingSize(img);
-                        } else {
-                            img.applyFilters();
-                        }
-                    }
-
-                    // Restore cut masks
-                    if (sheet.cuts_json && sheet.cuts_json.length > 0) {
-                        state.sheetCutData[sheet.id] = sheet.cuts_json;
-                        if (typeof applyAllCuts === 'function') {
-                            applyAllCuts(img, sheet.cuts_json);
-                        }
-                    }
-
-                    sheetsLoaded++;
-
-                    if (sheetsLoaded === sheetsToLoad) {
-                        reorderSheetsByZIndex();
-                    }
-
-                    canvas.renderAll();
-                }, { crossOrigin: 'anonymous' });
-            }
+        // Draw exactly where each sheet is saved. New sheets get a cascaded
+        // offset from the server (SheetListCreate).
+        state.sheets.filter(s => s.rendered_image_url).forEach(sheet => {
+            fabric.Image.fromURL(sheet.rendered_image_url, function(img, isError) {
+                if (generation !== renderGeneration) return;
+                if (isError || !img.getElement()) {
+                    DW.showToast(`Could not load the image of sheet "${sheet.name}"`, 'error');
+                    return;
+                }
+                canvas.add(setupSheetImage(img, sheet));
+                // Stacking follows Z-index, not the order the images arrive in.
+                if (typeof applyRenderingHierarchy === 'function') applyRenderingHierarchy();
+            }, { crossOrigin: 'anonymous' });
         });
     }
-    
+
     function reorderSheetsByZIndex() {
-        const canvas = state.canvas;
-        const sheetObjects = canvas.getObjects().filter(obj => obj.sheetData);
-
-        if (sheetObjects.length === 0) return;
-
-        sheetObjects.sort((a, b) => a.sheetData.z_index - b.sheetData.z_index);
-
-        for (let i = sheetObjects.length - 1; i >= 0; i--) {
-            canvas.sendToBack(sheetObjects[i]);
-        }
-
-        if (typeof bringMeasurementsToFront === 'function') {
-            bringMeasurementsToFront();
-        }
-
-        canvas.renderAll();
+        if (typeof applyRenderingHierarchy === 'function') applyRenderingHierarchy();
     }
-    
+
+    /** Point the canvas object and the shared state at a sheet saved by the server. */
+    function replaceSheetData(updated) {
+        const index = state.sheets.findIndex(s => s.id === updated.id);
+        if (index >= 0) state.sheets[index] = updated;
+        if (state.selectedSheet && state.selectedSheet.id === updated.id) {
+            state.selectedSheet = updated;
+            window.selectedSheet = updated;
+        }
+        const obj = state.canvas.getObjects().find(o => o.sheetData && o.sheetData.id === updated.id);
+        if (obj) obj.sheetData = updated;
+    }
+
     function renderSheetLayers() {
         if (typeof renderSheetGroupList === 'function') {
             renderSheetGroupList();
@@ -156,6 +147,7 @@
             item.classList.toggle('selected', parseInt(item.dataset.sheetId) === sheetId);
         });
 
+        if (typeof openRightSidebar === 'function') openRightSidebar();
         document.getElementById('no-selection').style.display = 'none';
         document.getElementById('sheet-properties').style.display = 'block';
         document.getElementById('asset-properties').style.display = 'none';
@@ -174,132 +166,100 @@
     }
     
     // ==================== Sheet Visibility ====================
-    
-    function toggleSheetVisibility(sheetId, visible) {
-        state.canvas.getObjects().forEach(obj => {
-            if (obj.sheetData && obj.sheetData.id === sheetId) {
-                obj.visible = visible;
-            }
-        });
-        state.canvas.renderAll();
-    }
-    
-    // ==================== Sheet Updates ====================
-    
-    async function updateSheetProperty(property, value, reload = true) {
-        if (!state.selectedSheet) return;
 
-        const data = {};
-        data[property] = value;
+    /** The eye on a sheet. Saved, so it stays hidden after a reload. */
+    async function toggleSheetVisibility(sheetId, visible) {
+        const sheet = state.sheets.find(s => s.id === sheetId);
+        if (!sheet) return false;
+        const previous = sheet.visible;
+        sheet.visible = visible;
+        if (typeof applyVisibility === 'function') applyVisibility();
+        try {
+            const response = await fetch(`/api/sheets/${sheetId}/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': DW.getCSRFToken() },
+                body: JSON.stringify({ visible })
+            });
+            if (!response.ok) throw new Error(await DW.responseError(response));
+            return true;
+        } catch (error) {
+            sheet.visible = previous;
+            if (typeof applyVisibility === 'function') applyVisibility();
+            renderSheetLayers();
+            DW.showToast('Could not save the sheet visibility: ' + error.message, 'error');
+            return false;
+        }
+    }
+
+    // ==================== Sheet Updates ====================
+
+    const SHEET_NUMBER_FIELDS = ['offset_x', 'offset_y', 'rotation', 'z_index'];
+
+    /**
+     * Save one field typed in the sheet properties panel. Undo restores the
+     * previous value. The panel is reset to the saved value on an error.
+     */
+    async function updateSheetProperty(property, value, recordUndo = true) {
+        const sheet = state.selectedSheet;
+        if (!sheet) return;
+
+        if (SHEET_NUMBER_FIELDS.includes(property)) {
+            value = property === 'z_index' ? parseInt(value, 10) : parseFloat(value);
+            if (!isFinite(value)) {
+                DW.showToast('Enter a number', 'warning');
+                selectSheet(sheet.id);
+                return;
+            }
+        }
+        const previous = sheet[property];
+        if (previous === value) return;
 
         try {
-            const response = await fetch(`/api/sheets/${state.selectedSheet.id}/`, {
+            const response = await fetch(`/api/sheets/${sheet.id}/`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': DW.getCSRFToken()
                 },
-                body: JSON.stringify(data)
+                body: JSON.stringify({ [property]: value })
             });
+            if (!response.ok) throw new Error(await DW.responseError(response));
 
-            if (response.ok && reload) {
-                const updated = await response.json();
-                const index = state.sheets.findIndex(s => s.id === state.selectedSheet.id);
-                state.sheets[index] = updated;
-                state.selectedSheet = updated;
-                window.selectedSheet = updated;
-
-                updateSheetOnCanvas(state.selectedSheet.id, property, value);
+            const updated = await response.json();
+            replaceSheetData(updated);
+            updateSheetOnCanvas(updated.id, property, updated[property]);
+            if (recordUndo && typeof saveUndoState === 'function') {
+                saveUndoState('sheetProperty', { sheetId: updated.id, property, previous });
             }
+            if (property === 'name') renderSheetLayers();
         } catch (error) {
-            console.error('Error updating sheet:', error);
+            DW.showToast('Could not save the sheet: ' + error.message, 'error');
+            if (state.selectedSheet && state.selectedSheet.id === sheet.id) selectSheet(sheet.id);
         }
     }
-    
+
     function updateSheetOnCanvas(sheetId, property, value) {
         const canvas = state.canvas;
-        canvas.getObjects().forEach(obj => {
-            if (obj.sheetData && obj.sheetData.id === sheetId) {
-                switch (property) {
-                    case 'rotation':
-                        obj.set('angle', parseFloat(value));
-                        break;
-                    case 'offset_x':
-                        obj.set('left', parseFloat(value));
-                        break;
-                    case 'offset_y':
-                        obj.set('top', parseFloat(value));
-                        break;
-                    case 'z_index':
-                        const zIndex = parseInt(value);
-                        if (zIndex > 0) {
-                            canvas.bringToFront(obj);
-                        } else {
-                            canvas.sendToBack(obj);
-                        }
-                        break;
-                }
-                obj.setCoords();
-                canvas.renderAll();
-            }
-        });
-    }
-    
-    async function saveSheetRotation(sheetId, angle) {
-        try {
-            const response = await fetch(`/api/sheets/${sheetId}/`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': DW.getCSRFToken()
-                },
-                body: JSON.stringify({ rotation: angle })
-            });
-
-            if (response.ok) {
-                const updated = await response.json();
-                const index = state.sheets.findIndex(s => s.id === sheetId);
-                if (index >= 0) {
-                    state.sheets[index] = updated;
-                    if (state.selectedSheet && state.selectedSheet.id === sheetId) {
-                        state.selectedSheet = updated;
-                        window.selectedSheet = updated;
-                        document.getElementById('sheet-rotation').value = updated.rotation;
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Error saving sheet rotation:', error);
+        const obj = canvas.getObjects().find(o => o.sheetData && o.sheetData.id === sheetId);
+        if (!obj) return;
+        switch (property) {
+            case 'rotation':
+                obj.set('angle', parseFloat(value));
+                break;
+            case 'offset_x':
+                obj.set('left', parseFloat(value));
+                break;
+            case 'offset_y':
+                obj.set('top', parseFloat(value));
+                break;
+            case 'z_index':
+                // Sheets stay below links, assets and measurements; Z-index
+                // only orders sheets among themselves.
+                if (typeof applyRenderingHierarchy === 'function') applyRenderingHierarchy();
+                break;
         }
-    }
-
-    async function saveSheetPosition(sheetId, x, y) {
-        try {
-            const response = await fetch(`/api/sheets/${sheetId}/`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': DW.getCSRFToken()
-                },
-                body: JSON.stringify({ offset_x: x, offset_y: y })
-            });
-
-            if (response.ok) {
-                const updated = await response.json();
-                const index = state.sheets.findIndex(s => s.id === sheetId);
-                if (index >= 0) {
-                    state.sheets[index] = updated;
-                    if (state.selectedSheet && state.selectedSheet.id === sheetId) {
-                        state.selectedSheet = updated;
-                        window.selectedSheet = updated;
-                        document.getElementById('sheet-offset-x').value = updated.offset_x;
-                        document.getElementById('sheet-offset-y').value = updated.offset_y;
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Error saving sheet position:', error);
-        }
+        obj.setCoords();
+        canvas.requestRenderAll();
     }
 
     // ==================== Canvas → Server Sync ====================
@@ -339,11 +299,8 @@
             }
 
             const updated = await response.json();
-            const index = state.sheets.findIndex(s => s.id === sheetId);
-            if (index >= 0) state.sheets[index] = updated;
+            replaceSheetData(updated);
             if (state.selectedSheet && state.selectedSheet.id === sheetId) {
-                state.selectedSheet = updated;
-                window.selectedSheet = updated;
                 document.getElementById('sheet-offset-x').value = updated.offset_x;
                 document.getElementById('sheet-offset-y').value = updated.offset_y;
                 document.getElementById('sheet-rotation').value = updated.rotation;
@@ -358,7 +315,6 @@
     
     async function deleteSelectedSheet() {
         if (!state.selectedSheet) {
-            console.log('No sheet selected for deletion');
             return;
         }
 
@@ -512,6 +468,11 @@
                 visibleLayers.push(parseInt(cb.dataset.xref));
             }
         });
+        // An empty list means "all layers visible" to the server. xref 0 is
+        // never a layer, so [0] shows the page with every layer hidden.
+        if (visibleLayers.length === 0) {
+            visibleLayers.push(0);
+        }
 
         try {
             var response = await fetch('/api/sheets/' + sheet.id + '/layers/', {
@@ -525,12 +486,7 @@
 
             if (response.ok) {
                 var updated = await response.json();
-                var index = state.sheets.findIndex(function(s) { return s.id === sheet.id; });
-                if (index >= 0) {
-                    state.sheets[index] = updated;
-                    state.selectedSheet = updated;
-                    window.selectedSheet = updated;
-                }
+                replaceSheetData(updated);
 
                 // Re-render just this sheet on canvas
                 var canvas = state.canvas;
@@ -539,50 +495,23 @@
                 });
 
                 if (oldObj && updated.rendered_image_url) {
-                    fabric.Image.fromURL(updated.rendered_image_url + '?t=' + Date.now(), function(img) {
-                        img.set({
-                            left: oldObj.left,
-                            top: oldObj.top,
-                            angle: oldObj.angle,
-                            selectable: oldObj.selectable,
-                            evented: true,
-                            hasControls: false,
-                            hasBorders: false,
-                            lockScalingX: true,
-                            lockScalingY: true,
-                            lockUniScaling: true,
-                            lockRotation: false,
-                        });
+                    fabric.Image.fromURL(updated.rendered_image_url + '?t=' + Date.now(), function(img, isError) {
+                        if (isError || !img.getElement()) return;
+                        // Keep the position on screen, which may not be saved yet.
+                        setupSheetImage(img, Object.assign({}, updated, {
+                            offset_x: oldObj.left, offset_y: oldObj.top, rotation: oldObj.angle
+                        }));
                         img.sheetData = updated;
-
                         canvas.remove(oldObj);
                         canvas.add(img);
-
-                        if (state.isPdfInverted) {
-                            if (!img.filters) img.filters = [];
-                            img.filters.push(new fabric.Image.filters.Invert());
-                            if (typeof applyFiltersPreservingSize === 'function') {
-                                applyFiltersPreservingSize(img);
-                            } else {
-                                img.applyFilters();
-                            }
-                        }
-
-                        if (updated.cuts_json && updated.cuts_json.length > 0) {
-                            state.sheetCutData[updated.id] = updated.cuts_json;
-                            if (typeof applyAllCuts === 'function') {
-                                applyAllCuts(img, updated.cuts_json);
-                            }
-                        }
-
-                        reorderSheetsByZIndex();
-                        canvas.renderAll();
+                        if (typeof applyRenderingHierarchy === 'function') applyRenderingHierarchy();
                     }, { crossOrigin: 'anonymous' });
                 }
 
                 DW.showToast('PDF layers updated', 'success');
             } else {
-                DW.showToast('Failed to update layers', 'error');
+                DW.showToast('Could not change the layers: ' + await DW.responseError(response), 'error');
+                renderPdfLayersUI(sheet);
             }
         } catch (error) {
             console.error('Error updating PDF layers:', error);
@@ -608,10 +537,10 @@
         renderSheetLayers,
         selectSheet,
         toggleSheetVisibility,
+        setupSheetImage,
+        replaceSheetData,
         updateSheetProperty,
         updateSheetOnCanvas,
-        saveSheetRotation,
-        saveSheetPosition,
         saveSheetTransformFromCanvas,
         deleteSelectedSheet,
         deleteSheet,
@@ -628,13 +557,12 @@
     window.toggleSheetVisibility = toggleSheetVisibility;
     window.updateSheetProperty = updateSheetProperty;
     window.updateSheetOnCanvas = updateSheetOnCanvas;
-    window.saveSheetRotation = saveSheetRotation;
-    window.saveSheetPosition = saveSheetPosition;
+    window.setupSheetImage = setupSheetImage;
+    window.replaceSheetData = replaceSheetData;
     window.saveSheetTransformFromCanvas = saveSheetTransformFromCanvas;
     window.deleteSelectedSheet = deleteSelectedSheet;
     window.deleteSheet = deleteSheet;
     window.renderPdfLayersUI = renderPdfLayersUI;
     window.toggleAllPdfLayers = toggleAllPdfLayers;
     
-    console.log('DocuWeaver sheets module loaded');
 })();

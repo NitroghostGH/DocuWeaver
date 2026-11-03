@@ -1,8 +1,9 @@
 /**
  * DocuWeaver Canvas Editor - Measurements Module
  * 
- * Handles measurement tool UI, sets management, and config modal.
- * Note: The core MeasurementTool is in measurement_tool.js
+ * Measurement panel, save dialog, selection and the style (config) modal.
+ * Drawing, saving, loading and showing measurements is MeasurementTool
+ * (static/js/measurement_tool.js), which holds the list of saved ones.
  * 
  * Depends on: namespace.js
  */
@@ -14,26 +15,6 @@
     const state = DW.state;
     
     // ==================== Measurement Calculations ====================
-    
-    function calcMeasureDistance(p1, p2) {
-        const dx = p2.x - p1.x;
-        const dy = p2.y - p1.y;
-        const pixelDist = Math.sqrt(dx * dx + dy * dy);
-        const ppm = PROJECT_DATA.pixels_per_meter;
-        if (PROJECT_DATA.scale_calibrated && ppm && isFinite(ppm) && ppm > 0) {
-            return { pixels: pixelDist, meters: pixelDist / ppm, calibrated: true };
-        }
-        return { pixels: pixelDist, meters: null, calibrated: false };
-    }
-    
-    function formatMeasureDistance(dist) {
-        if (dist.calibrated) {
-            if (dist.meters >= 1000) return `${(dist.meters / 1000).toFixed(2)} km`;
-            if (dist.meters >= 1) return `${dist.meters.toFixed(2)} m`;
-            return `${(dist.meters * 100).toFixed(1)} cm`;
-        }
-        return `${Math.round(dist.pixels)} px`;
-    }
     
     // ==================== Measurement Tool UI ====================
     
@@ -51,32 +32,13 @@
         }
     }
     
-    function removeMeasurePreview() {
-        const canvas = state.canvas;
-        if (state.measurePreviewLine) {
-            canvas.remove(state.measurePreviewLine);
-            state.measurePreviewLine = null;
-        }
-        if (state.measurePreviewLabel) {
-            canvas.remove(state.measurePreviewLabel);
-            state.measurePreviewLabel = null;
-        }
-    }
-    
     function clearMeasurements() {
-        const canvas = state.canvas;
         if (typeof MeasurementTool !== 'undefined') {
             MeasurementTool.clearCurrent();
+            MeasurementTool.updatePanel();
         }
-        state.measureOverlays.forEach(obj => canvas.remove(obj));
-        state.measureOverlays = [];
-        removeMeasurePreview();
-        state.measurePoints = [];
-        window.measurePoints = [];
-        updateMeasurePanel();
-        canvas.renderAll();
     }
-    
+
     function toggleMeasureMode(mode) {
         // Clear existing measurement FIRST before switching modes
         clearMeasurements();
@@ -85,7 +47,6 @@
         }
         
         state.measureMode = mode;
-        window.measureMode = mode;
         if (typeof MeasurementTool !== 'undefined') {
             MeasurementTool.startMeasurement(mode);
         }
@@ -116,381 +77,7 @@
         }
     }
     
-    function handleMeasureClick(opt) {
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        if (typeof MeasurementTool !== 'undefined') {
-            MeasurementTool.addPoint(pointer.x, pointer.y);
-        }
-    }
-    
-    function handleMeasureMove(opt) {
-        if (state.measurePoints.length === 0) return;
-        if (state.measureMode === 'single' && state.measurePoints.length >= 2) return;
-
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        const lastPt = state.measurePoints[state.measurePoints.length - 1];
-
-        // Update or create preview line
-        if (!state.measurePreviewLine) {
-            state.measurePreviewLine = new fabric.Line(
-                [lastPt.x, lastPt.y, pointer.x, pointer.y],
-                { 
-                    stroke: '#00bcd4', 
-                    strokeWidth: 1, 
-                    strokeUniform: true,
-                    strokeDashArray: [4, 4], 
-                    opacity: 0.6, 
-                    selectable: false, 
-                    evented: false,
-                    isMeasurement: true
-                }
-            );
-            canvas.add(state.measurePreviewLine);
-        } else {
-            state.measurePreviewLine.set({ 
-                x1: lastPt.x, 
-                y1: lastPt.y, 
-                x2: pointer.x, 
-                y2: pointer.y 
-            });
-        }
-        canvas.bringToFront(state.measurePreviewLine);
-
-        // Update or create preview label
-        const dist = calcMeasureDistance(lastPt, pointer);
-        const label = formatMeasureDistance(dist);
-        const midX = (lastPt.x + pointer.x) / 2;
-        const midY = (lastPt.y + pointer.y) / 2;
-        
-        if (!state.measurePreviewLabel) {
-            state.measurePreviewLabel = new fabric.Text(label, {
-                left: midX, 
-                top: midY - 18, 
-                fontSize: 11, 
-                fill: '#ffffff',
-                backgroundColor: 'rgba(0, 188, 212, 0.5)', 
-                fontFamily: 'monospace',
-                padding: 3, 
-                selectable: false, 
-                evented: false,
-                isMeasurement: true
-            });
-            canvas.add(state.measurePreviewLabel);
-        } else {
-            state.measurePreviewLabel.set({ text: label, left: midX, top: midY - 18 });
-        }
-        canvas.bringToFront(state.measurePreviewLabel);
-        canvas.requestRenderAll();
-    }
-    
-    function updateMeasurePanel() {
-        const segmentList = document.getElementById('measure-segments');
-        const totalEl = document.getElementById('measure-total');
-        const straightEl = document.getElementById('measure-straight');
-        const straightRow = document.getElementById('measure-straight-row');
-        const warningEl = document.getElementById('measure-scale-warning');
-
-        if (!segmentList) return;
-
-        if (warningEl) {
-            warningEl.style.display = PROJECT_DATA.scale_calibrated ? 'none' : 'block';
-        }
-
-        segmentList.innerHTML = '';
-
-        if (state.measurePoints.length < 2) {
-            totalEl.textContent = '--';
-            straightEl.textContent = '--';
-            straightRow.style.display = 'none';
-            return;
-        }
-
-        let totalPixels = 0;
-        let totalMeters = 0;
-        let allCalibrated = true;
-
-        for (let i = 1; i < state.measurePoints.length; i++) {
-            const dist = calcMeasureDistance(state.measurePoints[i - 1], state.measurePoints[i]);
-            totalPixels += dist.pixels;
-            if (dist.calibrated) { 
-                totalMeters += dist.meters; 
-            } else { 
-                allCalibrated = false; 
-            }
-
-            const li = document.createElement('div');
-            li.style.cssText = 'padding: 0.2rem 0; font-size: 0.8rem; border-bottom: 1px solid var(--border-light, #e0e0e0); display: flex; justify-content: space-between;';
-            li.innerHTML = `<span>Seg ${i}</span><span>${formatMeasureDistance(dist)}</span>`;
-            segmentList.appendChild(li);
-        }
-
-        const totalDist = allCalibrated
-            ? { pixels: totalPixels, meters: totalMeters, calibrated: true }
-            : { pixels: totalPixels, meters: null, calibrated: false };
-        totalEl.textContent = formatMeasureDistance(totalDist);
-
-        // Straight-line distance
-        if (state.measureMode === 'chain' && state.measurePoints.length >= 3) {
-            straightRow.style.display = 'flex';
-            const straightDist = calcMeasureDistance(
-                state.measurePoints[0], 
-                state.measurePoints[state.measurePoints.length - 1]
-            );
-            straightEl.textContent = formatMeasureDistance(straightDist);
-        } else {
-            straightRow.style.display = 'none';
-        }
-    }
-    
-    function clearMeasurementOverlays() {
-        const canvas = state.canvas;
-        const overlays = canvas.getObjects().filter(obj => obj.isMeasurementOverlay);
-        overlays.forEach(obj => canvas.remove(obj));
-        canvas.renderAll();
-    }
-    
     // ==================== Measurement Sets ====================
-    
-    async function loadMeasurementSets() {
-        try {
-            const resp = await fetch(`/api/projects/${PROJECT_ID}/measurement-sets/`);
-            if (resp.ok) {
-                state.measurementSets = await resp.json();
-                window.measurementSets = state.measurementSets;
-                renderMeasurementSetsUI();
-            }
-        } catch (err) {
-            console.error('Error loading measurement sets:', err);
-        }
-    }
-    
-    function renderMeasurementSetsUI() {
-        const container = document.getElementById('measurement-sets-list');
-        if (!container) return;
-
-        container.innerHTML = '';
-
-        if (state.measurementSets.length === 0) {
-            container.innerHTML = '<p class="text-muted small">No saved measurements</p>';
-            return;
-        }
-
-        state.measurementSets.forEach(ms => {
-            const div = document.createElement('div');
-            div.className = 'measurement-set-item d-flex align-items-center py-1 px-2 border-bottom';
-            div.dataset.measurementId = ms.id;
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.checked = ms.visible;
-            checkbox.className = 'ms-visibility me-2';
-            checkbox.title = 'Toggle measurement visibility';
-            checkbox.addEventListener('change', () => toggleMeasurementSetVisibility(ms.id, checkbox.checked));
-
-            const colorDot = document.createElement('span');
-            colorDot.style.cssText = `
-                display: inline-block;
-                width: 12px;
-                height: 12px;
-                border-radius: 2px;
-                background-color: ${ms.color || '#00bcd4'};
-                margin-right: 8px;
-                flex-shrink: 0;
-            `;
-
-            const nameSpan = document.createElement('span');
-            nameSpan.className = 'text-truncate flex-grow-1';
-            nameSpan.textContent = ms.name;
-
-            const typeBadge = document.createElement('span');
-            typeBadge.className = 'badge ms-1';
-            typeBadge.className += ms.measurement_type === 'chain' ? ' bg-warning' : ' bg-info';
-            typeBadge.textContent = ms.measurement_type;
-            typeBadge.style.fontSize = '0.65em';
-
-            const distSpan = document.createElement('span');
-            distSpan.className = 'small text-muted ms-1';
-            if (ms.total_distance_meters) {
-                distSpan.textContent = `${ms.total_distance_meters.toFixed(2)}m`;
-            } else if (ms.total_distance_pixels) {
-                distSpan.textContent = `${ms.total_distance_pixels.toFixed(0)}px`;
-            }
-
-            const viewBtn = document.createElement('button');
-            viewBtn.className = 'btn btn-sm btn-outline-primary ms-1';
-            viewBtn.style.padding = '0 4px';
-            viewBtn.style.fontSize = '0.7em';
-            viewBtn.textContent = '👁';
-            viewBtn.title = 'Show on canvas';
-            viewBtn.addEventListener('click', () => showMeasurementSetOnCanvas(ms));
-
-            const delBtn = document.createElement('button');
-            delBtn.className = 'btn btn-sm btn-outline-danger ms-1';
-            delBtn.style.padding = '0 4px';
-            delBtn.style.fontSize = '0.7em';
-            delBtn.textContent = '×';
-            delBtn.title = 'Delete measurement';
-            delBtn.addEventListener('click', () => deleteMeasurementSet(ms.id, ms.name));
-
-            div.appendChild(checkbox);
-            div.appendChild(colorDot);
-            div.appendChild(nameSpan);
-            div.appendChild(typeBadge);
-            div.appendChild(distSpan);
-            div.appendChild(viewBtn);
-            div.appendChild(delBtn);
-
-            container.appendChild(div);
-        });
-    }
-    
-    async function toggleMeasurementSetVisibility(msId, visible) {
-        if (typeof MeasurementTool !== 'undefined') {
-            const success = await MeasurementTool.toggleVisibility(msId, visible);
-            if (success) {
-                // Reload measurement sets to sync state
-                await loadMeasurementSets();
-            }
-            return success;
-        }
-    }
-    
-    function showMeasurementSetOnCanvas(ms) {
-        if (!ms.points || ms.points.length === 0) return;
-
-        clearMeasurementOverlays();
-
-        const canvas = state.canvas;
-        const color = ms.color || '#00bcd4';
-        const points = ms.points;
-
-        if (points.length === 1) {
-            const marker = new fabric.Circle({
-                left: points[0].x,
-                top: points[0].y,
-                radius: 6,
-                fill: color,
-                stroke: '#fff',
-                strokeWidth: 2,
-                originX: 'center',
-                originY: 'center',
-                selectable: false,
-                evented: false,
-                isMeasurementOverlay: true
-            });
-            canvas.add(marker);
-        } else {
-            for (let i = 0; i < points.length - 1; i++) {
-                const line = new fabric.Line(
-                    [points[i].x, points[i].y, points[i + 1].x, points[i + 1].y],
-                    {
-                        stroke: color,
-                        strokeWidth: 2,
-                        selectable: false,
-                        evented: false,
-                        isMeasurementOverlay: true
-                    }
-                );
-                canvas.add(line);
-            }
-
-            points.forEach((pt, idx) => {
-                const marker = new fabric.Circle({
-                    left: pt.x,
-                    top: pt.y,
-                    radius: idx === 0 || idx === points.length - 1 ? 6 : 4,
-                    fill: idx === 0 ? '#00ff00' : (idx === points.length - 1 ? '#ff0000' : color),
-                    stroke: '#fff',
-                    strokeWidth: 1,
-                    originX: 'center',
-                    originY: 'center',
-                    selectable: false,
-                    evented: false,
-                    isMeasurementOverlay: true
-                });
-                canvas.add(marker);
-            });
-
-            if (ms.total_distance_meters || ms.total_distance_pixels) {
-                const lastPt = points[points.length - 1];
-                const prevPt = points[points.length - 2];
-                const midX = (lastPt.x + prevPt.x) / 2;
-                const midY = (lastPt.y + prevPt.y) / 2;
-                const distText = ms.total_distance_meters
-                    ? `${ms.total_distance_meters.toFixed(2)}m`
-                    : `${ms.total_distance_pixels.toFixed(0)}px`;
-
-                const label = new fabric.Text(distText, {
-                    left: midX + 10,
-                    top: midY - 10,
-                    fontSize: 12,
-                    fill: color,
-                    backgroundColor: 'rgba(255,255,255,0.8)',
-                    selectable: false,
-                    evented: false,
-                    isMeasurementOverlay: true
-                });
-                canvas.add(label);
-            }
-        }
-
-        canvas.renderAll();
-    }
-    
-    function renderSavedMeasurementsOnCanvas() {
-        const canvas = state.canvas;
-        
-        const savedOverlays = canvas.getObjects().filter(obj => obj.isSavedMeasurement);
-        savedOverlays.forEach(obj => canvas.remove(obj));
-
-        state.measurementSets.filter(ms => ms.visible).forEach(ms => {
-            if (!ms.points || ms.points.length === 0) return;
-
-            const color = ms.color || '#00bcd4';
-            const points = ms.points;
-
-            if (points.length >= 2) {
-                for (let i = 0; i < points.length - 1; i++) {
-                    const line = new fabric.Line(
-                        [points[i].x, points[i].y, points[i + 1].x, points[i + 1].y],
-                        {
-                            stroke: color,
-                            strokeWidth: 2,
-                            strokeDashArray: [5, 5],
-                            selectable: false,
-                            evented: false,
-                            isSavedMeasurement: true,
-                            measurementSetId: ms.id
-                        }
-                    );
-                    canvas.add(line);
-                }
-            }
-
-            points.forEach((pt, idx) => {
-                const marker = new fabric.Circle({
-                    left: pt.x,
-                    top: pt.y,
-                    radius: 4,
-                    fill: color,
-                    stroke: '#fff',
-                    strokeWidth: 1,
-                    originX: 'center',
-                    originY: 'center',
-                    selectable: false,
-                    evented: false,
-                    isSavedMeasurement: true,
-                    measurementSetId: ms.id
-                });
-                canvas.add(marker);
-            });
-        });
-
-        bringMeasurementsToFront();
-        canvas.renderAll();
-    }
     
     function saveMeasurementPrompt() {
         showSaveMeasurementModal();
@@ -503,34 +90,55 @@
         
         if (!modal) return;
         
+        if (typeof MeasurementTool === 'undefined' ||
+            MeasurementTool.getCurrentPoints().length < 2) {
+            DW.showToast('Measure something first: click at least two points', 'warning');
+            return;
+        }
+
         folderSelect.innerHTML = '<option value="">Ungrouped</option>';
-        
-        const measurementGroups = PROJECT_DATA.measurementGroups || [];
-        measurementGroups.forEach(g => {
-            const opt = document.createElement('option');
-            opt.value = g.id;
-            opt.textContent = g.name;
-            folderSelect.appendChild(opt);
-        });
-        
+
+        // Top-level folders come back with their subfolders nested.
+        function addFolderOptions(groups, depth) {
+            groups.forEach(g => {
+                if (g.group_type !== 'measurement') return;
+                const opt = document.createElement('option');
+                opt.value = g.id;
+                opt.textContent = '\u00A0\u00A0'.repeat(depth) + g.name;
+                folderSelect.appendChild(opt);
+                addFolderOptions(g.child_groups || [], depth + 1);
+            });
+        }
+        addFolderOptions(state.measurementGroups || [], 0);
+
         nameInput.value = '';
         modal.style.display = 'flex';
         nameInput.focus();
+    }
+
+    async function submitSaveMeasurement(e) {
+        e.preventDefault();
+        const name = document.getElementById('measurement-name').value.trim();
+        const folderId = document.getElementById('measurement-folder').value;
+        if (!name || typeof MeasurementTool === 'undefined') return;
+
+        const saved = await MeasurementTool.saveCurrent(name, folderId ? parseInt(folderId, 10) : null);
+        if (saved) {
+            hideSaveMeasurementModal();
+            if (typeof renderMeasurementGroupList === 'function') {
+                await renderMeasurementGroupList();
+            }
+        }
+    }
+
+    const saveMeasurementForm = document.getElementById('saveMeasurementForm');
+    if (saveMeasurementForm) {
+        saveMeasurementForm.addEventListener('submit', submitSaveMeasurement);
     }
     
     function hideSaveMeasurementModal() {
         const modal = document.getElementById('saveMeasurementModal');
         if (modal) modal.style.display = 'none';
-    }
-    
-    async function saveCurrentMeasurement() {
-        return saveMeasurementPrompt();
-    }
-    
-    async function deleteMeasurementSet(msId, name) {
-        if (typeof MeasurementTool !== 'undefined') {
-            return await MeasurementTool.delete(msId, name);
-        }
     }
     
     // ==================== Measurement Config Modal ====================
@@ -613,7 +221,6 @@
         hideMeasurementConfigModal();
         updateConfigPreviewBar();
 
-        console.log('Measurement config saved:', config);
     }
     
     function onMeasureConfigTypeChange(value) {
@@ -729,7 +336,6 @@
         
         refreshConfigTypesList();
         populateConfigTypeSelect();
-        console.log('Applied config type:', name);
     }
     
     function addNewConfigType() {
@@ -767,7 +373,6 @@
         MeasurementTool.saveConfigType(key, name, settings);
         refreshConfigTypesList();
         if (nameInput) nameInput.value = '';
-        console.log('Added new config type:', key, name);
     }
     
     function editConfigType(key) {
@@ -814,7 +419,6 @@
             
             MeasurementTool.saveConfigType(key, displayName, settings);
             refreshConfigTypesList();
-            console.log('Updated config type:', key);
         }
         
         window._editingConfigType = null;
@@ -837,7 +441,6 @@
         
         MeasurementTool.deleteConfigType(key);
         refreshConfigTypesList();
-        console.log('Deleted config type:', key);
     }
 
     // ==================== Measurement Selection ====================
@@ -846,11 +449,18 @@
     // Backspace then removes it (canvas_init.js → deleteSelectedMeasurement).
     // main.js clearSelection resets state.selectedMeasurementId and the highlight.
 
+    /** Select a saved measurement, from the canvas or from the sidebar. */
     function selectMeasurement(msId) {
         state.selectedMeasurementId = msId;
         const ms = MeasurementTool.getSavedMeasurements().find(m => m.id === msId);
+        const group = state.canvas.getObjects().find(o => o.isSavedMeasurement && o.measurementSetId === msId);
+        if (group && group.visible && state.canvas.getActiveObject() !== group) {
+            state.canvas.setActiveObject(group);
+            state.canvas.requestRenderAll();
+        }
         if (ms) {
-            DW.showToast(`Selected: ${ms.name || 'Measurement'} - press Delete to remove`, 'info');
+            DW.showToast(`Selected: ${ms.name || 'Measurement'}` +
+                (state.currentMode === 'select' ? ' - press Delete to remove' : ''), 'info');
         }
         highlightMeasurementInSidebar(msId);
     }
@@ -891,27 +501,13 @@
         selectMeasurement,
         highlightMeasurementInSidebar,
         deleteSelectedMeasurement,
-        calcMeasureDistance,
-        formatMeasureDistance,
         bringMeasurementsToFront,
-        removeMeasurePreview,
         clearMeasurements,
         toggleMeasureMode,
         toggleMeasurePanel,
-        handleMeasureClick,
-        handleMeasureMove,
-        updateMeasurePanel,
-        clearMeasurementOverlays,
-        loadMeasurementSets,
-        renderMeasurementSetsUI,
-        toggleMeasurementSetVisibility,
-        showMeasurementSetOnCanvas,
-        renderSavedMeasurementsOnCanvas,
         saveMeasurementPrompt,
         showSaveMeasurementModal,
         hideSaveMeasurementModal,
-        saveCurrentMeasurement,
-        deleteMeasurementSet,
         showMeasurementConfigModal,
         hideMeasurementConfigModal,
         switchConfigTab,
@@ -929,27 +525,13 @@
     };
     
     // Expose globally for backward compatibility
-    window.calcMeasureDistance = calcMeasureDistance;
-    window.formatMeasureDistance = formatMeasureDistance;
     window.bringMeasurementsToFront = bringMeasurementsToFront;
-    window.removeMeasurePreview = removeMeasurePreview;
     window.clearMeasurements = clearMeasurements;
     window.toggleMeasureMode = toggleMeasureMode;
     window.toggleMeasurePanel = toggleMeasurePanel;
-    window.handleMeasureClick = handleMeasureClick;
-    window.handleMeasureMove = handleMeasureMove;
-    window.updateMeasurePanel = updateMeasurePanel;
-    window.clearMeasurementOverlays = clearMeasurementOverlays;
-    window.loadMeasurementSets = loadMeasurementSets;
-    window.renderMeasurementSetsUI = renderMeasurementSetsUI;
-    window.toggleMeasurementSetVisibility = toggleMeasurementSetVisibility;
-    window.showMeasurementSetOnCanvas = showMeasurementSetOnCanvas;
-    window.renderSavedMeasurementsOnCanvas = renderSavedMeasurementsOnCanvas;
     window.saveMeasurementPrompt = saveMeasurementPrompt;
     window.showSaveMeasurementModal = showSaveMeasurementModal;
     window.hideSaveMeasurementModal = hideSaveMeasurementModal;
-    window.saveCurrentMeasurement = saveCurrentMeasurement;
-    window.deleteMeasurementSet = deleteMeasurementSet;
     window.showMeasurementConfigModal = showMeasurementConfigModal;
     window.hideMeasurementConfigModal = hideMeasurementConfigModal;
     window.switchConfigTab = switchConfigTab;
@@ -968,5 +550,4 @@
     window.highlightMeasurementInSidebar = highlightMeasurementInSidebar;
     window.deleteSelectedMeasurement = deleteSelectedMeasurement;
 
-    console.log('DocuWeaver measurements module loaded');
 })();

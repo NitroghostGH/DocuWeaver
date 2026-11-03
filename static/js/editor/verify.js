@@ -8,9 +8,26 @@
  *   1. All 17 DW namespace modules exist
  *   2. All global functions referenced by editor.html onclick/onchange/oninput exist
  *   3. DW.state has expected properties and canvas is initialized
+ *
+ * Prints one summary line, plus any failures. Add ?verify=1 to the editor
+ * URL for the full list.
  */
 (function() {
     'use strict';
+
+    // Run after main.js has created the canvas (its DOMContentLoaded
+    // handler is registered first, so it runs first).
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', runSelfCheck);
+    } else {
+        runSelfCheck();
+    }
+
+    function runSelfCheck() {
+    var verbose = /[?&]verify=1\b/.test(window.location.search);
+    function log() {
+        if (verbose) console.log.apply(console, arguments);
+    }
 
     var pass = 0;
     var fail = 0;
@@ -32,11 +49,11 @@
         warningsList.push(label);
     }
 
-    console.log('%c=== DocuWeaver Verification ===', 'font-weight:bold;font-size:14px;color:#4fc3f7');
+    log('%c=== DocuWeaver Verification ===', 'font-weight:bold;font-size:14px;color:#4fc3f7');
 
     // ==================== 1. Namespace Modules ====================
 
-    console.log('%c--- Module Load Check ---', 'font-weight:bold;color:#81c784');
+    log('%c--- Module Load Check ---', 'font-weight:bold;color:#81c784');
 
     var DW = window.DocuWeaver;
     check('DocuWeaver namespace exists', !!DW);
@@ -51,15 +68,15 @@
         var exists = DW && typeof DW[mod] === 'object' && DW[mod] !== null;
         check('DW.' + mod + ' exists', exists);
         if (exists) {
-            console.log('  ✅ DW.' + mod);
+            log('  ✅ DW.' + mod);
         } else {
-            console.log('  ❌ DW.' + mod + ' — MISSING');
+            log('  ❌ DW.' + mod + ' — MISSING');
         }
     });
 
     // ==================== 2. Global Functions ====================
 
-    console.log('%c--- Global Function Check ---', 'font-weight:bold;color:#81c784');
+    log('%c--- Global Function Check ---', 'font-weight:bold;color:#81c784');
 
     // Every function referenced via onclick/onchange/oninput in editor.html
     var requiredGlobals = [
@@ -99,7 +116,7 @@
         'importStepNext', 'importStepBack', 'importWithMapping',
         'toggleAssetTypeMode',
         'importLinksStepNext', 'importLinksStepBack', 'importLinksWithMapping',
-        'exportProject', 'downloadReport',
+        'exportComposedPdf', 'downloadReport',
 
         // Calibration / Verify
         'applyCalibration', 'hideCalibrateModal',
@@ -122,7 +139,13 @@
         'applyCanvasTheme', 'getCSRFToken', 'showToast',
 
         // Undo
-        'saveUndoState', 'undo',
+        'saveUndoState', 'clearUndoHistory', 'undo',
+
+        // Visibility (sheet, asset, link, folder, section and batch eyes)
+        'applyVisibility', 'isItemShown', 'toggleSheetVisibility',
+        'toggleAssetVisibility', 'toggleLinkVisibility',
+        'toggleLayerGroupVisibility', 'toggleBatchVisibility',
+        'setSheetInversion', 'setupSheetImage', 'repositionAssets',
 
         // OSM
         'toggleOSMLayer'
@@ -134,23 +157,24 @@
         check('window.' + fn, exists);
         if (!exists) {
             missingGlobals.push(fn);
-            console.log('  ❌ window.' + fn + ' — MISSING');
+            log('  ❌ window.' + fn + ' — MISSING');
         }
     });
 
     if (missingGlobals.length === 0) {
-        console.log('  ✅ All ' + requiredGlobals.length + ' global functions present');
+        log('  ✅ All ' + requiredGlobals.length + ' global functions present');
     }
 
     // ==================== 3. State Check ====================
 
-    console.log('%c--- State Initialization Check ---', 'font-weight:bold;color:#81c784');
+    log('%c--- State Initialization Check ---', 'font-weight:bold;color:#81c784');
 
     var stateProps = [
         'canvas', 'sheets', 'assets', 'links', 'currentMode',
         'selectedSheet', 'selectedAsset', 'isPdfInverted',
         'sheetCutData', 'undoStack', 'osmEnabled', 'osmOpacity',
-        'osmZIndex', 'osmDarkMode', 'assetRotationDeg',
+        'osmDarkMode', 'osmPendingTiles', 'assetRotationDeg',
+        'folderById', 'hiddenSections', 'hiddenBatches',
         'showUncutSheetId', 'selectedMeasurementId',
         'assetGroups', 'linkGroups', 'sheetGroups', 'measurementGroups'
     ];
@@ -160,7 +184,7 @@
             var exists = prop in DW.state;
             check('state.' + prop + ' exists', exists);
             if (!exists) {
-                console.log('  ❌ state.' + prop + ' — MISSING');
+                log('  ❌ state.' + prop + ' — MISSING');
             }
         });
 
@@ -170,23 +194,23 @@
                            (DW.state.canvas.renderAll && DW.state.canvas.getObjects);
             check('state.canvas is Fabric instance', isFabric);
             if (isFabric) {
-                console.log('  ✅ state.canvas is a Fabric.js Canvas');
+                log('  ✅ state.canvas is a Fabric.js Canvas');
             } else {
-                console.log('  ❌ state.canvas exists but is not a Fabric Canvas');
+                log('  ❌ state.canvas exists but is not a Fabric Canvas');
             }
         } else {
             warn('state.canvas is null (page may still be loading)');
-            console.log('  ⚠️  state.canvas is null — if page is still loading this is OK');
+            log('  ⚠️  state.canvas is null — if page is still loading this is OK');
         }
 
-        console.log('  ✅ All ' + stateProps.length + ' state properties present');
+        log('  ✅ All ' + stateProps.length + ' state properties present');
     } else {
         check('DW.state exists', false);
     }
 
     // ==================== 4. Cross-module Integration Spot Checks ====================
 
-    console.log('%c--- Integration Spot Checks ---', 'font-weight:bold;color:#81c784');
+    log('%c--- Integration Spot Checks ---', 'font-weight:bold;color:#81c784');
 
     // Check that key utility functions are accessible across modules
     var crossModuleFns = [
@@ -198,41 +222,33 @@
         { name: 'renderSheetLayers', desc: 'sheet layer panel' },
         { name: 'renderAssetList', desc: 'asset list panel' },
         { name: 'renderOSMLayer', desc: 'OSM tile layer' },
-        { name: 'renderSavedMeasurementsOnCanvas', desc: 'saved measurements' },
+        { name: 'clearCalibrationPick', desc: 'scale tool reset' },
         { name: 'renderImportBatches', desc: 'import batch list' },
         { name: 'renderLinkImportBatches', desc: 'link batch list' },
         { name: 'renderLayerGroupsUI', desc: 'layer groups UI' },
-        { name: 'saveSheetPosition', desc: 'sheet position persistence' },
-        { name: 'saveSheetRotation', desc: 'sheet rotation persistence' },
+        { name: 'replaceSheetData', desc: 'sheet data after a save' },
+        { name: 'updateMarkerScale', desc: 'marker size at low zoom' },
         { name: 'refreshAssets', desc: 'asset refresh after save' }
     ];
 
     crossModuleFns.forEach(function(item) {
         var exists = typeof window[item.name] === 'function';
         if (exists) {
-            console.log('  ✅ ' + item.name + ' (' + item.desc + ')');
+            log('  ✅ ' + item.name + ' (' + item.desc + ')');
         } else {
             warn(item.name + ' not found (' + item.desc + ')');
-            console.log('  ⚠️  ' + item.name + ' — not found (' + item.desc + ')');
+            log('  ⚠️  ' + item.name + ' — not found (' + item.desc + ')');
         }
     });
 
     // ==================== Summary ====================
 
     var total = pass + fail;
-    console.log('');
     if (fail === 0) {
-        console.log('%c✅ PASS: ' + pass + '/' + total + ' checks passed', 'font-weight:bold;font-size:13px;color:#4caf50');
+        console.info('DocuWeaver self-check: ' + pass + '/' + total + ' passed' +
+            (warnings ? ', ' + warnings + ' warning(s): ' + warningsList.join('; ') : ''));
     } else {
-        console.log('%c❌ FAIL: ' + fail + ' of ' + total + ' checks failed', 'font-weight:bold;font-size:13px;color:#f44336');
-        console.log('Failures:');
-        failures.forEach(function(f) { console.log('  • ' + f); });
+        console.error('DocuWeaver self-check: ' + fail + ' of ' + total + ' failed: ' + failures.join('; '));
     }
-
-    if (warnings > 0) {
-        console.log('%c⚠️  ' + warnings + ' warning(s)', 'font-weight:bold;color:#ff9800');
-        warningsList.forEach(function(w) { console.log('  • ' + w); });
     }
-
-    console.log('%c=== End Verification ===', 'font-weight:bold;font-size:14px;color:#4fc3f7');
 })();

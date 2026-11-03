@@ -23,6 +23,7 @@ const MeasurementTool = (() => {
     let canvas = null;
     let currentPoints = [];
     let currentMode = null;  // 'single' or 'chain'
+    let finished = false;    // a chain ended with a right or middle click
     let currentOverlays = [];
     let previewLine = null;
     let previewLabel = null;
@@ -128,7 +129,6 @@ const MeasurementTool = (() => {
         if (configTypes[typeName]) {
             currentConfigType = typeName;
             config = { ...defaultConfig, ...configTypes[typeName].config };
-            console.log(`Switched to measurement config: ${typeName}`);
             return true;
         }
         console.warn(`Unknown config type: ${typeName}`);
@@ -221,7 +221,6 @@ const MeasurementTool = (() => {
         canvas = canvasInstance;
         projectId = projectIdParam;
         loadConfigTypes();  // Load saved config types
-        console.log('MeasurementTool initialized');
     }
 
     /**
@@ -245,52 +244,47 @@ const MeasurementTool = (() => {
             console.error('Invalid measurement mode:', mode);
             return;
         }
+        clearCurrent();
         currentMode = mode;
-        currentPoints = [];
-        currentOverlays = [];
-        previewLine = null;
-        previewLabel = null;
-        console.log(`Started ${mode} measurement`);
     }
 
+    /**
+     * Stop adding points to the chain (right or middle click). The chain
+     * stays drawn and can still be saved, as a chain; the next click starts a
+     * new one and removes it.
+     */
     function endMeasurement() {
-        // Keep current measurement but stop accepting new points
-        // Preview line should disappear on move
         removePreview();
-        currentMode = null;
-        console.log('Measurement ended');
+        finished = true;
+        if (canvas) canvas.requestRenderAll();
     }
 
+    /** Remove the measurement being drawn. The mode (single or chain) is kept. */
     function clearCurrent() {
         currentOverlays.forEach(obj => {
             if (canvas) canvas.remove(obj);
         });
+        removePreview();
         currentOverlays = [];
         currentPoints = [];
         previewLine = null;
         previewLabel = null;
-        currentMode = null;
-        if (canvas) {
-            bringMeasurementsToFront();
-            canvas.renderAll();
-        }
+        finished = false;
+        if (canvas) canvas.requestRenderAll();
     }
 
     // ==================== Point Addition & Rendering ====================
 
     function addPoint(x, y) {
-        // Auto-start in single mode if not started
         if (!currentMode) {
-            console.log('MeasurementTool: auto-starting in single mode');
-            startMeasurement('single');
+            const mode = (window.DocuWeaver && DocuWeaver.state.measureMode) || 'single';
+            currentMode = ['single', 'chain'].includes(mode) ? mode : 'single';
         }
-        
-        // In single mode with 2 points, auto-clear FIRST before adding new point
-        if (currentMode === 'single' && currentPoints.length >= 2) {
-            console.log('Single mode: auto-clearing after 2 points');
+
+        // A finished chain, or a single measurement with both points, is
+        // replaced by the new one this click starts.
+        if (finished || (currentMode === 'single' && currentPoints.length >= 2)) {
             clearCurrent();
-            startMeasurement('single');
-            // Now add the point as the first point of the new measurement
         }
 
         // Skip zero-length segments
@@ -379,7 +373,7 @@ const MeasurementTool = (() => {
     }
 
     function handleMouseMove(pointerX, pointerY) {
-        if (currentPoints.length === 0) return;
+        if (currentPoints.length === 0 || finished) return;
         if (currentMode === 'single' && currentPoints.length >= 2) return;
         if (!canvas) return;
 
@@ -594,8 +588,7 @@ const MeasurementTool = (() => {
             return false;
         }
 
-        // Store the mode before we potentially change it
-        const mode = currentMode || 'single'; // Default to 'single' if mode is null
+        const mode = currentMode || (currentPoints.length > 2 ? 'chain' : 'single');
 
         const totalDist = getTotalDistance();
         
@@ -624,8 +617,6 @@ const MeasurementTool = (() => {
             data.layer_group = layerGroupId;
         }
 
-        console.log('Saving measurement:', data);
-
         try {
             const response = await fetch(`/api/projects/${projectId}/measurement-sets/`, {
                 method: 'POST',
@@ -636,11 +627,8 @@ const MeasurementTool = (() => {
                 body: JSON.stringify(data)
             });
 
-            console.log('Save response status:', response.status);
-
             if (response.ok) {
                 const saved = await response.json();
-                console.log('Measurement saved successfully:', saved);
                 savedMeasurements.push(saved);
                 clearCurrent();
                 updatePanel();
@@ -651,7 +639,6 @@ const MeasurementTool = (() => {
                 let errorMsg = 'Failed to save measurement';
                 try {
                     const errData = await response.json();
-                    console.error('API error response:', errData);
                     errorMsg = errData.error || errData.detail || JSON.stringify(errData);
                 } catch (e) {
                     console.error('Could not parse error response:', e);
@@ -681,7 +668,13 @@ const MeasurementTool = (() => {
         return false;
     }
 
+    /** Show or hide a saved measurement; saved on the server. */
     async function toggleVisibility(id, visible) {
+        const ms = savedMeasurements.find(m => m.id === id);
+        if (!ms) return false;
+        const previous = ms.visible;
+        ms.visible = typeof visible === 'boolean' ? visible : !ms.visible;
+        applyVisibilityToSaved();
         try {
             const response = await fetch(`/api/measurement-sets/${id}/toggle-visibility/`, {
                 method: 'PATCH',
@@ -689,24 +682,36 @@ const MeasurementTool = (() => {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': getCSRFToken()
                 },
-                body: JSON.stringify({ visible })
+                body: JSON.stringify({ visible: ms.visible })
             });
-
-            if (response.ok) {
-                const result = await response.json();
-                // Update the local measurement set with the server response
-                const ms = savedMeasurements.find(m => m.id === id);
-                if (ms) {
-                    ms.visible = result.visible;
-                }
-                // Re-render the canvas to show/hide the measurement
-                renderSaved();
-                return true;
-            }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            ms.visible = (await response.json()).visible;
+            applyVisibilityToSaved();
+            return true;
         } catch (err) {
-            console.error('Error toggling measurement visibility:', err);
+            ms.visible = previous;
+            applyVisibilityToSaved();
+            showNotification('Could not save the measurement visibility', 'error');
+            return false;
         }
-        return false;
+    }
+
+    function applyVisibilityToSaved() {
+        if (typeof applyVisibility === 'function') {
+            applyVisibility();
+        } else {
+            renderSaved();
+        }
+    }
+
+    /** Drop a measurement deleted elsewhere (the sidebar) from the list and the canvas. */
+    function removeSaved(id) {
+        savedMeasurements = savedMeasurements.filter(m => m.id !== id);
+        if (canvas) {
+            canvas.getObjects().filter(o => o.isSavedMeasurement && o.measurementSetId === id)
+                .forEach(o => canvas.remove(o));
+            canvas.requestRenderAll();
+        }
     }
 
     async function deleteById(id, name) {
@@ -749,8 +754,9 @@ const MeasurementTool = (() => {
         const savedOverlays = canvas.getObjects().filter(obj => obj.isSavedMeasurement);
         savedOverlays.forEach(obj => canvas.remove(obj));
 
-        // Draw each visible saved measurement
-        savedMeasurements.filter(ms => ms.visible).forEach(ms => {
+        // Draw every saved measurement; hidden ones (own eye, folder, section)
+        // are kept as invisible objects so showing them needs no redraw.
+        savedMeasurements.forEach(ms => {
             if (!ms.points || ms.points.length === 0) return;
 
             const color = ms.color || config.lineColor;
@@ -811,6 +817,8 @@ const MeasurementTool = (() => {
                     measurementSetId: ms.id,
                     measurementName: ms.name
                 });
+                measurementGroup.visible = (typeof isItemShown === 'function')
+                    ? isItemShown(ms, 'measurement') : ms.visible !== false;
                 canvas.add(measurementGroup);
             }
         });
@@ -865,6 +873,7 @@ const MeasurementTool = (() => {
         saveCurrent,
         loadSaved,
         toggleVisibility,
+        removeSaved,
         delete: deleteById,
         renderSaved,
         getCurrentPoints,

@@ -119,35 +119,83 @@
 
     async function loadLayerGroups() {
         try {
-            const [assetResp, linkResp, sheetResp, measurementResp] = await Promise.all([
-                fetch(`/api/projects/${PROJECT_ID}/layer-groups/?type=asset`),
-                fetch(`/api/projects/${PROJECT_ID}/layer-groups/?type=link`),
-                fetch(`/api/projects/${PROJECT_ID}/layer-groups/?type=sheet`),
-                fetch(`/api/projects/${PROJECT_ID}/layer-groups/?type=measurement`)
-            ]);
-
-            if (assetResp.ok) {
-                state.assetGroups = await assetResp.json();
-            }
-            if (linkResp.ok) {
-                state.linkGroups = await linkResp.json();
-            }
-            if (sheetResp.ok) {
-                state.sheetGroups = await sheetResp.json();
-            }
-            if (measurementResp.ok) {
-                state.measurementGroups = await measurementResp.json();
-            }
-
-            // Initialize visibility from loaded data
-            [...state.assetGroups, ...state.linkGroups, ...state.sheetGroups, ...state.measurementGroups].forEach(g => {
-                state.groupVisibility[g.id] = g.visible;
-            });
-
+            // One request: the top-level folders of every type, each with
+            // its subfolders nested in child_groups.
+            const resp = await fetch(`/api/projects/${PROJECT_ID}/layer-groups/`);
+            if (!resp.ok) throw new Error(await DW.responseError(resp));
+            const groups = await resp.json();
+            state.assetGroups = groups.filter(g => g.group_type === 'asset');
+            state.linkGroups = groups.filter(g => g.group_type === 'link');
+            state.sheetGroups = groups.filter(g => g.group_type === 'sheet');
+            state.measurementGroups = groups.filter(g => g.group_type === 'measurement');
+            indexFolders(groups);
             renderLayerGroupsUI();
         } catch (err) {
             console.error('Error loading layer groups:', err);
+            DW.showToast('Could not load folders: ' + err.message, 'error');
         }
+    }
+
+    // ==================== Visibility ====================
+    //
+    // Something is drawn only if its own eye is open, every folder above it
+    // is shown, and its section and import batch aren't hidden. Item and
+    // folder eyes are saved on the server; section and batch eyes are kept
+    // per browser. applyVisibility() sets the visible flag of every canvas
+    // object from these rules, so a toggle never needs a redraw.
+
+    function indexFolders(groups) {
+        state.folderById = new Map();
+        state.groupVisibility = {};
+        const walk = list => (list || []).forEach(g => {
+            state.folderById.set(g.id, g);
+            state.groupVisibility[g.id] = g.visible;
+            walk(g.child_groups);
+        });
+        walk(groups);
+    }
+
+    function isFolderShown(groupId) {
+        const seen = new Set();
+        let id = groupId;
+        while (id != null && !seen.has(id)) {
+            seen.add(id);
+            if (state.groupVisibility[id] === false) return false;
+            const folder = state.folderById.get(id);
+            id = folder ? folder.parent_group : null;
+        }
+        return true;
+    }
+
+    const SECTION_OF_TYPE = { sheet: 'sheets', asset: 'assets', link: 'links', measurement: 'measurements' };
+
+    function isItemShown(item, type) {
+        if (!item || item.visible === false) return false;
+        if (state.hiddenSections.unified || state.hiddenSections[SECTION_OF_TYPE[type]]) return false;
+        if (item.import_batch && state.hiddenBatches[item.import_batch]) return false;
+        return !item.layer_group || isFolderShown(item.layer_group);
+    }
+
+    function applyVisibility() {
+        const canvas = state.canvas;
+        if (!canvas) return;
+        const sheets = new Map(state.sheets.map(s => [s.id, s]));
+        const assets = new Map(state.assets.map(a => [a.id, a]));
+        const links = new Map(state.links.map(l => [l.id, l]));
+        const measurements = new Map(
+            ((typeof MeasurementTool !== 'undefined') ? MeasurementTool.getSavedMeasurements() : [])
+                .map(m => [m.id, m]));
+
+        canvas.getObjects().forEach(obj => {
+            let shown;
+            if (obj.sheetData) shown = isItemShown(sheets.get(obj.sheetData.id), 'sheet');
+            else if (obj.assetData) shown = isItemShown(assets.get(obj.assetData.id), 'asset');
+            else if (obj.isLinkObject && obj.linkData) shown = state.linksVisible !== false && isItemShown(links.get(obj.linkData.id), 'link');
+            else if (obj.isSavedMeasurement) shown = isItemShown(measurements.get(obj.measurementSetId), 'measurement');
+            else return;
+            obj.visible = shown;
+        });
+        canvas.requestRenderAll();
     }
 
     function renderLayerGroupsUI() {
@@ -488,7 +536,6 @@
             return;
         }
 
-        console.log('Rendering asset groups. Total assets:', state.assets.length);
 
         const ungroupedAssets = state.assets.filter(a => !a.layer_group);
         if (ungroupedAssets.length > 0) {
@@ -520,7 +567,6 @@
             return;
         }
 
-        console.log('Rendering link groups. Total links:', state.links.length);
 
         const ungroupedLinks = state.links.filter(l => !l.layer_group);
         if (ungroupedLinks.length > 0) {
@@ -1073,13 +1119,15 @@
 
     async function removeItemFromGroup(itemType, itemId) {
         try {
-            var endpoint;
-            if (itemType === 'asset') {
-                endpoint = 'assets';
-            } else if (itemType === 'sheet') {
-                endpoint = 'sheets';
-            } else {
-                endpoint = 'links';
+            var endpoint = {
+                asset: 'assets',
+                sheet: 'sheets',
+                link: 'links',
+                measurement: 'measurement-sets'
+            }[itemType];
+            if (!endpoint) {
+                console.error('removeItemFromGroup: unknown item type', itemType);
+                return;
             }
             var resp = await fetch('/api/' + endpoint + '/' + itemId + '/', {
                 method: 'PATCH',
@@ -1400,8 +1448,11 @@
     }
 
     async function toggleLayerGroupVisibility(groupId, visible) {
+        const previous = state.groupVisibility[groupId];
+        state.groupVisibility[groupId] = visible;
+        applyVisibility();
         try {
-            var resp = await fetch('/api/layer-groups/' + groupId + '/toggle-visibility/', {
+            const resp = await fetch('/api/layer-groups/' + groupId + '/toggle-visibility/', {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1409,39 +1460,15 @@
                 },
                 body: JSON.stringify({ visible: visible })
             });
-
-            if (resp.ok) {
-                state.groupVisibility[groupId] = visible;
-                if (typeof clearAssetsFromCanvas === 'function') clearAssetsFromCanvas();
-                if (typeof clearLinksFromCanvas === 'function') clearLinksFromCanvas();
-                if (typeof renderAssetsOnCanvas === 'function') renderAssetsOnCanvas();
-                if (typeof renderLinksOnCanvas === 'function') renderLinksOnCanvas();
-            }
+            if (!resp.ok) throw new Error(await DW.responseError(resp));
+            const folder = state.folderById.get(groupId);
+            if (folder) folder.visible = visible;
         } catch (err) {
-            console.error('Error toggling group visibility:', err);
+            state.groupVisibility[groupId] = previous;
+            applyVisibility();
+            renderLayerGroupsUI();
+            DW.showToast('Could not save the folder visibility: ' + err.message, 'error');
         }
-    }
-
-    function showJoinGroupDialog(group, type) {
-        var groups = type === 'asset' ? state.assetGroups : state.linkGroups;
-        var otherGroups = groups.filter(g => g.id !== group.id && !g.parent_group);
-
-        if (otherGroups.length === 0) {
-            alert('No other groups available to join to.');
-            return;
-        }
-
-        var groupNames = otherGroups.map(g => g.name).join('\n');
-        var parentName = prompt('Join "' + group.name + '" to which group?\n\nAvailable groups:\n' + groupNames);
-        if (!parentName) return;
-
-        var parent = otherGroups.find(g => g.name.toLowerCase() === parentName.toLowerCase());
-        if (!parent) {
-            alert('Group not found');
-            return;
-        }
-
-        joinGroups(parent.id, group.id);
     }
 
     async function joinGroups(parentId, childId) {
@@ -1574,22 +1601,6 @@
         }
     }
 
-    // ==================== Canvas Helpers ====================
-
-    function clearAssetsFromCanvas() {
-        var canvas = state.canvas;
-        if (!canvas) return;
-        var assetObjs = canvas.getObjects().filter(obj => obj.assetData);
-        assetObjs.forEach(obj => canvas.remove(obj));
-    }
-
-    function clearLinksFromCanvas() {
-        var canvas = state.canvas;
-        if (!canvas) return;
-        var linkObjs = canvas.getObjects().filter(obj => obj.isLinkObject);
-        linkObjs.forEach(obj => canvas.remove(obj));
-    }
-
     // ==================== Public API ====================
 
     DW.layers = {
@@ -1597,6 +1608,9 @@
         hideCreateGroupModal: hideCreateGroupModal,
         createLayerGroup: createLayerGroup,
         loadLayerGroups: loadLayerGroups,
+        isFolderShown: isFolderShown,
+        isItemShown: isItemShown,
+        applyVisibility: applyVisibility,
         renderLayerGroupsUI: renderLayerGroupsUI,
         isDescendantOf: isDescendantOf,
         getAllGlobalGroups: getAllGlobalGroups,
@@ -1624,13 +1638,10 @@
         moveContentsToFolder: moveContentsToFolder,
         ungroupAllItems: ungroupAllItems,
         toggleLayerGroupVisibility: toggleLayerGroupVisibility,
-        showJoinGroupDialog: showJoinGroupDialog,
         joinGroups: joinGroups,
         unjoinGroup: unjoinGroup,
         deleteLayerGroup: deleteLayerGroup,
         moveItemToGroup: moveItemToGroup,
-        clearAssetsFromCanvas: clearAssetsFromCanvas,
-        clearLinksFromCanvas: clearLinksFromCanvas
     };
 
     // Backward compatibility
@@ -1638,6 +1649,9 @@
     window.hideCreateGroupModal = hideCreateGroupModal;
     window.createLayerGroup = createLayerGroup;
     window.loadLayerGroups = loadLayerGroups;
+    window.isFolderShown = isFolderShown;
+    window.isItemShown = isItemShown;
+    window.applyVisibility = applyVisibility;
     window.renderLayerGroupsUI = renderLayerGroupsUI;
     window.isDescendantOf = isDescendantOf;
     window.getAllGlobalGroups = getAllGlobalGroups;
@@ -1665,13 +1679,9 @@
     window.moveContentsToFolder = moveContentsToFolder;
     window.ungroupAllItems = ungroupAllItems;
     window.toggleLayerGroupVisibility = toggleLayerGroupVisibility;
-    window.showJoinGroupDialog = showJoinGroupDialog;
     window.joinGroups = joinGroups;
     window.unjoinGroup = unjoinGroup;
     window.deleteLayerGroup = deleteLayerGroup;
     window.moveItemToGroup = moveItemToGroup;
-    window.clearAssetsFromCanvas = clearAssetsFromCanvas;
-    window.clearLinksFromCanvas = clearLinksFromCanvas;
 
-    console.log('DocuWeaver layers module loaded');
 })();

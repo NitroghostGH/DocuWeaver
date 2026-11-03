@@ -17,8 +17,9 @@ python -m pip install -q -r requirements.txt || goto :fail
 if not exist ".env" (
   echo ^>^> Creating .env with a fresh secret key
   copy /y .env.example .env >nul
-  for /f "delims=" %%k in ('python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"') do set "KEY=%%k"
-  python -c "import re,io;p='.env';s=open(p).read();s=re.sub(r'^DJANGO_SECRET_KEY=.*$','DJANGO_SECRET_KEY=%KEY%',s,flags=re.M);open(p,'w').write(s)"
+  REM Python generates and writes the key in one step. A cmd variable set inside
+  REM this block would read as empty, and cmd mangles some characters keys use.
+  python -c "import re;from django.core.management.utils import get_random_secret_key as g;p='.env';s=open(p).read();open(p,'w').write(re.sub(r'(?m)^DJANGO_SECRET_KEY=.*$',lambda m:'DJANGO_SECRET_KEY='+g(),s))" || goto :fail
 )
 
 echo ^>^> Applying database migrations

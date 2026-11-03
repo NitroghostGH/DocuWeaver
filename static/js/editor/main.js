@@ -23,18 +23,23 @@
                 fetch(`/api/projects/${PROJECT_ID}/links/`)
             ]);
 
+            // Lists sort the way people number things (V2 before V10).
+            // Sheets keep Z-index order first: it is also the stacking order.
+            const byName = DW.naturalCompare;
             if (sheetsResp.ok) {
-                state.sheets = await sheetsResp.json();
+                state.sheets = (await sheetsResp.json()).sort((a, b) =>
+                    ((Number(a.z_index) || 0) - (Number(b.z_index) || 0)) || byName(a.name, b.name));
                 window.sheets = state.sheets;
             }
             if (assetsResp.ok) {
-                state.assets = await assetsResp.json();
+                state.assets = (await assetsResp.json()).sort((a, b) => byName(a.asset_id, b.asset_id));
                 window.assets = state.assets;
             }
             if (linksResp.ok) {
-                state.links = await linksResp.json();
+                state.links = (await linksResp.json()).sort((a, b) => byName(a.link_id, b.link_id));
                 window.links = state.links;
             }
+            if (typeof updateCoordinateLabels === 'function') updateCoordinateLabels();
 
             // Render data on canvas
             renderSheetsOnCanvas();
@@ -52,12 +57,23 @@
             if (typeof renderLayerGroupsUI === 'function') {
                 renderLayerGroupsUI();
             }
+
+            // Import batch panels (asset and link CSV imports)
+            if (typeof renderImportBatches === 'function') {
+                renderImportBatches();
+            }
+            if (typeof renderLinkImportBatches === 'function') {
+                renderLinkImportBatches();
+            }
             
-            // Render saved measurements
-            renderSavedMeasurementsOnCanvas();
-            
+            // Saved measurements (MeasurementTool holds the list)
+            if (typeof MeasurementTool !== 'undefined') {
+                MeasurementTool.renderSaved();
+            }
+
             // Apply rendering hierarchy to order layer types correctly on canvas
             applyRenderingHierarchy();
+            if (typeof applyVisibility === 'function') applyVisibility();
             
             // Load OSM if enabled
             if (state.osmEnabled && state.refAssetId) {
@@ -66,6 +82,7 @@
 
         } catch (error) {
             console.error('Error loading project data:', error);
+            DW.showToast('Could not load the project: ' + error.message, 'error');
         }
     }
     
@@ -73,47 +90,64 @@
     // It loads groups by type (asset, link, sheet, measurement) and calls renderLayerGroupsUI
     
     // ==================== Theme ====================
-    
+
+    const CANVAS_BACKGROUND = { light: '#e0e0e0', dark: '#2a2a2a' };
+
+    function isDarkTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'dark';
+    }
+
     function applyCanvasTheme() {
         if (!state.canvas) return;
-        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        state.canvas.backgroundColor = isDark ? '#2a2a3a' : '#e0e0e0';
-        state.canvas.renderAll();
+        state.canvas.backgroundColor = isDarkTheme() ? CANVAS_BACKGROUND.dark : CANVAS_BACKGROUND.light;
+        state.canvas.requestRenderAll();
     }
-    
+
     // ==================== Filter Utilities ====================
-    
+
     function applyFiltersPreservingSize(img) {
-        const wBefore = img.width;
-        const hBefore = img.height;
         img.applyFilters();
-        const el = img._element;
-        const elW = el ? (el.naturalWidth || el.width) : 0;
-        const elH = el ? (el.naturalHeight || el.height) : 0;
-        if (elW !== wBefore || elH !== hBefore || img._filterScalingX !== 1 || img._filterScalingY !== 1) {
-            console.warn('[applyFiltersPreservingSize] dimension mismatch');
-        }
         img._filterScalingX = 1;
         img._filterScalingY = 1;
     }
-    
+
+    // Dark mode shows a sheet as a negative with its hues kept: an invert
+    // followed by a 180 degree hue rotation, folded into one colour matrix
+    // (the hue rotation H keeps greys, so H(1 - c) = 1 - Hc). White paper turns
+    // black and black linework white, while a blue main stays blue and red
+    // markup stays red. A plain invert turned blue into yellow and red into cyan.
+    const DARK_SHEET_MATRIX = [
+        1 / 3, -2 / 3, -2 / 3, 0, 1,
+        -2 / 3, 1 / 3, -2 / 3, 0, 1,
+        -2 / 3, -2 / 3, 1 / 3, 0, 1,
+        0, 0, 0, 1, 0
+    ];
+
+    function setSheetInversion(img, inverted) {
+        const filters = (img.filters || []).filter(f => !f.isDarkSheetFilter && f.type !== 'Invert');
+        if (inverted) {
+            const filter = new fabric.Image.filters.ColorMatrix({ matrix: DARK_SHEET_MATRIX });
+            filter.isDarkSheetFilter = true;
+            filters.push(filter);
+        }
+        const changed = filters.length !== (img.filters || []).length;
+        img.filters = filters;
+        if (changed || inverted) {
+            applyFiltersPreservingSize(img);
+            img.dirty = true;
+        }
+    }
+
     function applyPdfInversion() {
         if (!state.canvas) return;
         state.canvas.getObjects().filter(obj => obj.sheetData).forEach(img => {
-            if (!img.filters) img.filters = [];
-            if (state.isPdfInverted) {
-                if (!img.filters.some(f => f.type === 'Invert')) {
-                    img.filters.push(new fabric.Image.filters.Invert());
-                }
-            } else {
-                img.filters = img.filters.filter(f => f.type !== 'Invert');
-            }
-            applyFiltersPreservingSize(img);
-            img.dirty = true;
+            setSheetInversion(img, state.isPdfInverted);
         });
-        state.canvas.renderAll();
+        // Labels are drawn for the current theme (see assetLabelStyle).
+        if (typeof refreshAssets === 'function') refreshAssets();
+        state.canvas.requestRenderAll();
     }
-    
+
     // ==================== Selection Management ====================
     
     let _clearingSelection = false;
@@ -185,155 +219,6 @@
         }
     }
     
-    // ==================== Layer Section Sorting ====================
-    
-    let draggedSection = null;
-    
-    function initLayerSectionSorting() {
-        const container = document.getElementById('layers-container');
-        if (!container) return;
-        
-        const sections = container.querySelectorAll('.sortable-layer-section');
-        
-        sections.forEach(section => {
-            const handle = section.querySelector('.drag-handle');
-            if (!handle) return;
-            
-            handle.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                draggedSection = section;
-                section.classList.add('dragging');
-                
-                document.addEventListener('mousemove', onDragMove);
-                document.addEventListener('mouseup', onDragEnd);
-            });
-            
-            section.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                if (draggedSection && draggedSection !== section) {
-                    section.classList.add('drag-over');
-                }
-            });
-            
-            section.addEventListener('dragleave', () => {
-                section.classList.remove('drag-over');
-            });
-        });
-        
-        restoreLayerSectionOrder();
-    }
-    
-    function onDragMove(e) {
-        if (!draggedSection) return;
-        
-        const container = document.getElementById('layers-container');
-        const sections = [...container.querySelectorAll('.sortable-layer-section')];
-        
-        const mouseY = e.clientY;
-        let targetSection = null;
-        
-        for (const section of sections) {
-            if (section === draggedSection) continue;
-            const rect = section.getBoundingClientRect();
-            if (mouseY >= rect.top && mouseY <= rect.bottom) {
-                targetSection = section;
-                break;
-            }
-        }
-        
-        sections.forEach(s => s.classList.remove('drag-over'));
-        
-        if (targetSection) {
-            const targetRect = targetSection.getBoundingClientRect();
-            const isAboveMiddle = mouseY < targetRect.top + targetRect.height / 2;
-            
-            if (isAboveMiddle) {
-                targetSection.classList.add('drag-over');
-            } else {
-                const nextSibling = targetSection.nextElementSibling;
-                if (nextSibling && nextSibling.classList.contains('sortable-layer-section')) {
-                    nextSibling.classList.add('drag-over');
-                }
-            }
-        }
-    }
-    
-    function onDragEnd(e) {
-        if (!draggedSection) return;
-        
-        const container = document.getElementById('layers-container');
-        const sections = [...container.querySelectorAll('.sortable-layer-section')];
-        
-        const mouseY = e.clientY;
-        let targetSection = null;
-        let insertBefore = true;
-        
-        for (const section of sections) {
-            if (section === draggedSection) continue;
-            const rect = section.getBoundingClientRect();
-            if (mouseY >= rect.top && mouseY <= rect.bottom) {
-                targetSection = section;
-                insertBefore = mouseY < rect.top + rect.height / 2;
-                break;
-            }
-        }
-        
-        sections.forEach(s => s.classList.remove('drag-over', 'dragging'));
-        
-        if (targetSection && targetSection !== draggedSection) {
-            if (insertBefore) {
-                container.insertBefore(draggedSection, targetSection);
-            } else {
-                container.insertBefore(draggedSection, targetSection.nextSibling);
-            }
-            saveLayerSectionOrder();
-        }
-        
-        draggedSection = null;
-        document.removeEventListener('mousemove', onDragMove);
-        document.removeEventListener('mouseup', onDragEnd);
-    }
-    
-    function saveLayerSectionOrder() {
-        const container = document.getElementById('layers-container');
-        if (!container) return;
-        
-        const sections = container.querySelectorAll('.sortable-layer-section');
-        const order = [...sections].map(s => s.dataset.section);
-        
-        localStorage.setItem(`docuweaver-layer-order-${PROJECT_ID}`, JSON.stringify(order));
-        console.log('Layer section order saved:', order);
-    }
-    
-    function restoreLayerSectionOrder() {
-        const container = document.getElementById('layers-container');
-        if (!container) return;
-        
-        const savedOrder = localStorage.getItem(`docuweaver-layer-order-${PROJECT_ID}`);
-        if (!savedOrder) return;
-        
-        try {
-            const order = JSON.parse(savedOrder);
-            const sections = container.querySelectorAll('.sortable-layer-section');
-            const sectionMap = {};
-            
-            sections.forEach(s => {
-                sectionMap[s.dataset.section] = s;
-            });
-            
-            order.forEach(sectionName => {
-                if (sectionMap[sectionName]) {
-                    container.appendChild(sectionMap[sectionName]);
-                }
-            });
-            
-            console.log('Layer section order restored:', order);
-        } catch (e) {
-            console.warn('Failed to restore layer section order:', e);
-        }
-    }
-    
     // ==================== Group Visibility ====================
     
     function toggleLayerGroup(groupName) {
@@ -343,61 +228,28 @@
         if (chevron) chevron.classList.toggle('collapsed');
     }
     
+    /**
+     * The eye on a whole section (sheets, assets, links, measurements, or
+     * 'unified' for everything). Kept per browser, like the section order;
+     * applyVisibility does the hiding.
+     */
     function toggleGroupVisibility(groupName, visible) {
-        const canvas = state.canvas;
-        
-        if (groupName === 'sheets') {
-            canvas.getObjects().forEach(obj => {
-                if (obj.sheetData) obj.visible = visible;
-            });
-            document.querySelectorAll('#sheet-layers .layer-visibility').forEach(cb => {
-                cb.checked = visible;
-            });
-        } else if (groupName === 'assets') {
-            canvas.getObjects().forEach(obj => {
-                if (obj.assetData) obj.visible = visible;
-            });
-            document.querySelectorAll('#import-batches .batch-visibility').forEach(cb => {
-                cb.checked = visible;
-            });
-        } else if (groupName === 'links') {
-            canvas.getObjects().forEach(obj => {
-                if (obj.isLinkObject) obj.visible = visible;
-            });
-        } else if (groupName === 'measurements') {
-            // Toggle all measurement objects (current and saved)
-            canvas.getObjects().forEach(obj => {
-                if (obj.measurementData || obj.isMeasurement || obj.isSavedMeasurement || obj.isMeasurementGroup) {
-                    obj.visible = visible;
-                }
-            });
-            // Also update all checkboxes in the measurement list
-            document.querySelectorAll('#measurement-groups-list .ms-visibility').forEach(cb => {
-                if (cb.checked !== visible) {
-                    cb.checked = visible;
-                    // Trigger the change event to update the server
-                    const event = new Event('change', { bubbles: true });
-                    cb.dispatchEvent(event);
-                }
-            });
-        }
-        canvas.renderAll();
+        state.hiddenSections[groupName] = !visible;
+        DW.storage.set(`docuweaver-hidden-sections-${PROJECT_ID}`, state.hiddenSections);
+        if (typeof applyVisibility === 'function') applyVisibility();
     }
-    
-    function toggleBatchVisibility(batchId, visible) {
-        state.canvas.getObjects().forEach(obj => {
-            if (obj.assetData && obj.assetData.import_batch === batchId) {
-                obj.visible = visible;
-            }
+
+    function restoreSectionVisibility() {
+        state.hiddenSections = DW.storage.get(`docuweaver-hidden-sections-${PROJECT_ID}`, {}) || {};
+        Object.keys(state.hiddenSections).forEach(name => {
+            const cb = document.getElementById(`${name}-group-vis`);
+            if (cb) cb.checked = !state.hiddenSections[name];
         });
-        state.canvas.renderAll();
     }
-    
+
     // ==================== Initialization ====================
     
     async function initEditor() {
-        console.log('Initializing DocuWeaver Editor...');
-        
         // Copy PROJECT_DATA calibration values into state
         if (typeof PROJECT_DATA !== 'undefined') {
             state.refAssetId = PROJECT_DATA.ref_asset_id || '';
@@ -406,89 +258,74 @@
             state.assetRotationDeg = PROJECT_DATA.asset_rotation || 0;
             state.osmEnabled = PROJECT_DATA.osm_enabled || false;
             state.osmOpacity = PROJECT_DATA.osm_opacity || 0.7;
-            state.osmZIndex = PROJECT_DATA.osm_z_index || 0;
-            
+
             // Sync to legacy globals
             window.refAssetId = state.refAssetId;
             window.refPixelX = state.refPixelX;
             window.refPixelY = state.refPixelY;
             window.assetRotationDeg = state.assetRotationDeg;
         }
-        
+
         // Initialize canvas
         if (typeof DW.canvas !== 'undefined' && DW.canvas.init) {
             DW.canvas.init();
         }
-        
-        // Apply theme
+
+        // Theme, and the per-browser view settings the first draw needs
+        state.isPdfInverted = isDarkTheme();
+        state.osmDarkMode = state.isPdfInverted;
         applyCanvasTheme();
-        
-        // Load layer groups first
+        loadRenderingHierarchy();
+        restoreSectionVisibility();
+        if (typeof restoreBatchVisibility === 'function') restoreBatchVisibility();
+
+        // Folders first: drawing needs their visibility
         await loadLayerGroups();
-        
-        // Load project data
-        await loadProjectData();
-        
-        // Load measurement sets
-        if (typeof loadMeasurementSets === 'function') {
-            await loadMeasurementSets();
-        }
-        
-        // Restore viewport state
+
+        // Restore the view before drawing, so OSM tiles load for this view
         if (typeof restoreViewportState === 'function') {
             restoreViewportState();
         }
-        
-        // Hook view state saving
+
+        await loadProjectData();
+
         if (typeof hookViewStateSaving === 'function') {
             hookViewStateSaving();
         }
-        
-        // Initialize layer section sorting
-        initLayerSectionSorting();
-        
-        // Load rendering hierarchy from localStorage
-        loadRenderingHierarchy();
-        
-        console.log('DocuWeaver Editor initialized');
     }
-    
+
     // ==================== Rendering Hierarchy ====================
-    
+
     function loadRenderingHierarchy() {
-        const saved = localStorage.getItem(`docuweaver-rendering-hierarchy-${PROJECT_ID}`);
-        if (saved) {
-            try {
-                state.renderingHierarchy = JSON.parse(saved);
-            } catch (e) {
-                console.error('Error loading rendering hierarchy:', e);
-            }
+        const saved = DW.storage.get(`docuweaver-rendering-hierarchy-${PROJECT_ID}`, null);
+        const known = ['sheets', 'links', 'assets', 'measurements'];
+        if (Array.isArray(saved) && saved.length === known.length && known.every(t => saved.includes(t))) {
+            state.renderingHierarchy = saved;
         }
     }
-    
+
     function saveRenderingHierarchy() {
-        localStorage.setItem(
-            `docuweaver-rendering-hierarchy-${PROJECT_ID}`,
-            JSON.stringify(state.renderingHierarchy)
-        );
+        DW.storage.set(`docuweaver-rendering-hierarchy-${PROJECT_ID}`, state.renderingHierarchy);
     }
-    
+
+    /**
+     * Put the canvas objects in drawing order: OSM tiles at the bottom, then
+     * the layer types in renderingHierarchy order, then anything else (the
+     * measurement being drawn, tool markers). Sheets are ordered by Z-index,
+     * and sheets with the same Z-index keep the order of the sheet list, so
+     * the stack is the same on every load whatever order the images arrive in.
+     *
+     * The order is built once and written back, instead of moveTo per object
+     * (each moveTo is a splice of the whole list).
+     */
     function applyRenderingHierarchy() {
         const canvas = state.canvas;
         if (!canvas) return;
-        
-        // Group objects by type
-        const objectsByType = {
-            osm: [],      // OSM tiles go at the very bottom
-            sheets: [],
-            links: [],
-            assets: [],
-            measurements: [],
-            other: []  // For measurement previews, etc.
-        };
-        
+
+        const objectsByType = { osm: [], sheets: [], links: [], assets: [], measurements: [], other: [] };
+
         canvas.getObjects().forEach(obj => {
-            if (obj.isOSMTile || obj.osmTileData) {
+            if (obj.isOSMTile) {
                 objectsByType.osm.push(obj);
             } else if (obj.sheetData) {
                 objectsByType.sheets.push(obj);
@@ -496,48 +333,34 @@
                 objectsByType.links.push(obj);
             } else if (obj.assetData) {
                 objectsByType.assets.push(obj);
-            } else if (obj.isMeasurementObject || obj.isSavedMeasurement || obj.isMeasurementGroup) {
+            } else if (obj.isSavedMeasurement) {
                 objectsByType.measurements.push(obj);
             } else {
-                // Uncategorized objects (measurement previews, etc.)
                 objectsByType.other.push(obj);
             }
         });
-        
-        // Sort sheets by their Z-index (maintain sheet ordering)
-        objectsByType.sheets.sort((a, b) => {
-            const zA = a.sheetData?.z_index || 0;
-            const zB = b.sheetData?.z_index || 0;
-            return zA - zB;
-        });
-        
-        // Apply hierarchy by moving objects to correct positions
-        let currentIndex = 0;
-        
-        // Always render OSM tiles first (at the bottom)
-        objectsByType.osm.forEach(obj => {
-            canvas.moveTo(obj, currentIndex);
-            currentIndex++;
-        });
-        
-        // Then render the configurable hierarchy
+
+        const listIndex = new Map(state.sheets.map((sheet, i) => [sheet.id, i]));
+        const zIndex = obj => {
+            const sheet = state.sheets[listIndex.get(obj.sheetData.id)] || obj.sheetData;
+            return Number(sheet.z_index) || 0;
+        };
+        objectsByType.sheets.sort((a, b) =>
+            (zIndex(a) - zIndex(b)) ||
+            ((listIndex.get(a.sheetData.id) ?? 0) - (listIndex.get(b.sheetData.id) ?? 0)));
+
+        const ordered = [...objectsByType.osm];
         state.renderingHierarchy.forEach(layerType => {
-            const objects = objectsByType[layerType] || [];
-            objects.forEach(obj => {
-                canvas.moveTo(obj, currentIndex);
-                currentIndex++;
-            });
+            (objectsByType[layerType] || []).forEach(obj => ordered.push(obj));
         });
-        
-        // Finally, render other uncategorized objects on top
-        objectsByType.other.forEach(obj => {
-            canvas.moveTo(obj, currentIndex);
-            currentIndex++;
-        });
-        
-        canvas.renderAll();
+        objectsByType.other.forEach(obj => ordered.push(obj));
+
+        const objects = canvas._objects;
+        objects.length = 0;
+        ordered.forEach(obj => objects.push(obj));
+        canvas.requestRenderAll();
     }
-    
+
     function showRenderingHierarchyModal() {
         const modal = document.getElementById('renderingHierarchyModal');
         if (!modal) return;
@@ -634,12 +457,11 @@
         applyPdfInversion,
         clearSelection,
         updateContextTools,
-        initLayerSectionSorting,
-        saveLayerSectionOrder,
-        restoreLayerSectionOrder,
         toggleLayerGroup,
         toggleGroupVisibility,
-        toggleBatchVisibility,
+        restoreSectionVisibility,
+        setSheetInversion,
+        isDarkTheme,
         loadRenderingHierarchy,
         saveRenderingHierarchy,
         applyRenderingHierarchy,
@@ -657,12 +479,9 @@
     window.applyPdfInversion = applyPdfInversion;
     window.clearSelection = clearSelection;
     window.updateContextTools = updateContextTools;
-    window.initLayerSectionSorting = initLayerSectionSorting;
-    window.saveLayerSectionOrder = saveLayerSectionOrder;
-    window.restoreLayerSectionOrder = restoreLayerSectionOrder;
     window.toggleLayerGroup = toggleLayerGroup;
     window.toggleGroupVisibility = toggleGroupVisibility;
-    window.toggleBatchVisibility = toggleBatchVisibility;
+    window.setSheetInversion = setSheetInversion;
     window.showRenderingHierarchyModal = showRenderingHierarchyModal;
     window.hideRenderingHierarchyModal = hideRenderingHierarchyModal;
     window.applyHierarchyChanges = applyHierarchyChanges;
@@ -676,5 +495,4 @@
         }
     });
     
-    console.log('DocuWeaver main module loaded');
 })();

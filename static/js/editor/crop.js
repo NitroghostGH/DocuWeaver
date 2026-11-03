@@ -102,7 +102,7 @@
         if (!clickedSheetObj) {
             canvas.getObjects().forEach(obj => {
                 if (obj.sheetData) {
-                    const bounds = obj.getBoundingRect();
+                    const bounds = obj.getBoundingRect(true, true);
                     if (pointer.x >= bounds.left && pointer.x <= bounds.left + bounds.width &&
                         pointer.y >= bounds.top && pointer.y <= bounds.top + bounds.height) {
                         clickedSheetObj = obj;
@@ -118,7 +118,7 @@
                 clickedSheetObj = null;
                 canvas.getObjects().forEach(obj => {
                     if (obj.sheetData && obj !== clippedSheet) {
-                        const bounds = obj.getBoundingRect();
+                        const bounds = obj.getBoundingRect(true, true);
                         if (pointer.x >= bounds.left && pointer.x <= bounds.left + bounds.width &&
                             pointer.y >= bounds.top && pointer.y <= bounds.top + bounds.height) {
                             if (!obj._clipPolygon || isPointInVisibleArea(obj, pointer)) {
@@ -132,7 +132,7 @@
 
         if (!state.isCropping) {
             if (!clickedSheetObj) {
-                console.log('Cut line must start on a sheet');
+                DW.showToast('Start the cut line on a sheet', 'warning');
                 return;
             }
 
@@ -224,8 +224,6 @@
 
         applyAllCuts(sheetObj, state.sheetCutData[sheetId]);
         saveCutData(sheetId, state.sheetCutData[sheetId]);
-        console.log('Cut added to sheet:', sheetObj.sheetData.name,
-                    'Total cuts:', state.sheetCutData[sheetId].length);
     }
 
     // ==================== Polygon Clipping ====================
@@ -422,11 +420,11 @@
                     cuts_json: cuts
                 })
             });
-            if (response.ok) {
-                console.log('Cut data saved, count:', cuts.length);
-            }
+            if (!response.ok) throw new Error(await DW.responseError(response));
+            if (typeof replaceSheetData === 'function') replaceSheetData(await response.json());
         } catch (error) {
             console.error('Error saving cut data:', error);
+            DW.showToast('Could not save the cut: ' + error.message, 'error');
         }
     }
 
@@ -451,7 +449,6 @@
 
     function clearSelectedSheetCut() {
         if (!state.selectedSheet) {
-            console.log('No sheet selected for clearing cut');
             return;
         }
 
@@ -469,7 +466,6 @@
         delete state.sheetCutData[state.selectedSheet.id];
 
         saveCutData(state.selectedSheet.id, []);
-        console.log('All cuts cleared from sheet:', state.selectedSheet.name);
         if (typeof updateContextTools === 'function') {
             updateContextTools();
         }
@@ -477,13 +473,11 @@
 
     function flipSelectedSheetCut() {
         if (!state.selectedSheet) {
-            console.log('No sheet selected for flip');
             return;
         }
 
         const cuts = state.sheetCutData[state.selectedSheet.id];
         if (!cuts || cuts.length === 0) {
-            console.log('No cut data to flip');
             return;
         }
 
@@ -491,6 +485,13 @@
             obj.sheetData && obj.sheetData.id === state.selectedSheet.id
         );
         if (!sheetObj) return;
+
+        if (typeof saveUndoState === 'function') {
+            saveUndoState('cut', {
+                sheetId: state.selectedSheet.id,
+                previousCutData: JSON.parse(JSON.stringify(cuts))
+            });
+        }
 
         const lastCut = cuts[cuts.length - 1];
         lastCut.flipped = !lastCut.flipped;
@@ -571,5 +572,4 @@
     window.flipSelectedSheetCut = flipSelectedSheetCut;
     window.toggleShowUncut = toggleShowUncut;
 
-    console.log('DocuWeaver crop module loaded');
 })();

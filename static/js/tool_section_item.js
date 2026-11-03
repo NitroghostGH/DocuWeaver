@@ -12,6 +12,20 @@
 const ToolSectionItem = (function() {
     'use strict';
 
+    // Drop a deleted item from the editor's shared state. The canvas and
+    // sidebar are redrawn from DocuWeaver.state by each type's refreshList.
+    function removeFromState(key, id) {
+        const state = window.DocuWeaver && DocuWeaver.state;
+        if (!state || !Array.isArray(state[key])) return;
+        const index = state[key].findIndex(x => x.id === id);
+        if (index >= 0) state[key].splice(index, 1);
+    }
+
+    function refreshImportBatches() {
+        if (typeof renderImportBatches === 'function') renderImportBatches();
+        if (typeof renderLinkImportBatches === 'function') renderLinkImportBatches();
+    }
+
     // Type-specific configuration
     const TYPE_CONFIG = {
         sheet: {
@@ -40,11 +54,7 @@ const ToolSectionItem = (function() {
                             });
                             canvas.renderAll();
                         }
-                        // Remove from local data
-                        if (typeof sheets !== 'undefined') {
-                            const index = sheets.findIndex(s => s.id === item.id);
-                            if (index >= 0) sheets.splice(index, 1);
-                        }
+                        removeFromState('sheets', item.id);
                         return true;
                     }
                     return false;
@@ -54,9 +64,7 @@ const ToolSectionItem = (function() {
                 }
             },
             onToggleVisibility: (item, visible) => {
-                if (typeof toggleSheetVisibility === 'function') {
-                    toggleSheetVisibility(item.id, visible);
-                }
+                return typeof toggleSheetVisibility === 'function' ? toggleSheetVisibility(item.id, visible) : false;
             },
             refreshList: () => {
                 if (typeof renderSheetLayers === 'function') renderSheetLayers();
@@ -79,13 +87,7 @@ const ToolSectionItem = (function() {
                         headers: { 'X-CSRFToken': typeof getCSRFToken === 'function' ? getCSRFToken() : '' }
                     });
                     if (response.ok) {
-                        // Reload assets
-                        if (typeof PROJECT_ID !== 'undefined') {
-                            const assetsResp = await fetch(`/api/projects/${PROJECT_ID}/assets/`);
-                            if (typeof assets !== 'undefined') {
-                                window.assets = await assetsResp.json();
-                            }
-                        }
+                        removeFromState('assets', item.id);
                         return true;
                     }
                     return false;
@@ -95,14 +97,14 @@ const ToolSectionItem = (function() {
                 }
             },
             onToggleVisibility: (item, visible) => {
-                if (typeof toggleAssetVisibility === 'function') {
-                    toggleAssetVisibility(item.id, visible);
-                }
+                return typeof toggleAssetVisibility === 'function' ? toggleAssetVisibility(item.id, visible) : false;
             },
             refreshList: () => {
                 if (typeof renderAssetList === 'function') renderAssetList();
                 if (typeof renderAssetGroupList === 'function') renderAssetGroupList();
                 if (typeof refreshAssets === 'function') refreshAssets();
+                if (typeof renderLayerGroupsUI === 'function') renderLayerGroupsUI();
+                refreshImportBatches();
             }
         },
         link: {
@@ -121,13 +123,7 @@ const ToolSectionItem = (function() {
                         headers: { 'X-CSRFToken': typeof getCSRFToken === 'function' ? getCSRFToken() : '' }
                     });
                     if (response.ok) {
-                        // Reload links
-                        if (typeof PROJECT_ID !== 'undefined') {
-                            const linksResp = await fetch(`/api/projects/${PROJECT_ID}/links/`);
-                            if (typeof links !== 'undefined') {
-                                window.links = await linksResp.json();
-                            }
-                        }
+                        removeFromState('links', item.id);
                         return true;
                     }
                     return false;
@@ -137,13 +133,14 @@ const ToolSectionItem = (function() {
                 }
             },
             onToggleVisibility: (item, visible) => {
-                if (typeof toggleLinkVisibility === 'function') {
-                    toggleLinkVisibility(item.id, visible);
-                }
+                return typeof toggleLinkVisibility === 'function' ? toggleLinkVisibility(item.id, visible) : false;
             },
             refreshList: () => {
                 if (typeof renderLinkList === 'function') renderLinkList();
                 if (typeof renderLinkGroupList === 'function') renderLinkGroupList();
+                if (typeof renderLinksOnCanvas === 'function') renderLinksOnCanvas();
+                if (typeof renderLayerGroupsUI === 'function') renderLayerGroupsUI();
+                refreshImportBatches();
             }
         },
         measurement: {
@@ -154,11 +151,7 @@ const ToolSectionItem = (function() {
             hasVisibility: true,
             hasDelete: true,
             deleteConfirmText: (item) => `Delete measurement "${item.name}"?`,
-            onSelect: (item) => {
-                if (typeof MeasurementTool !== 'undefined' && MeasurementTool.highlightMeasurement) {
-                    MeasurementTool.highlightMeasurement(item.id);
-                }
-            },
+            onSelect: (item) => typeof selectMeasurement === 'function' && selectMeasurement(item.id),
             onDelete: async (item) => {
                 try {
                     const response = await fetch(`/api/measurement-sets/${item.id}/`, {
@@ -166,12 +159,9 @@ const ToolSectionItem = (function() {
                         headers: { 'X-CSRFToken': typeof getCSRFToken === 'function' ? getCSRFToken() : '' }
                     });
                     if (response.ok) {
-                        // Update local data
-                        if (typeof MeasurementTool !== 'undefined' && MeasurementTool.getSavedMeasurements) {
-                            const saved = MeasurementTool.getSavedMeasurements();
-                            const index = saved.findIndex(m => m.id === item.id);
-                            if (index >= 0) saved.splice(index, 1);
-                        }
+                        // getSavedMeasurements() returns a copy, so removing
+                        // from it left the measurement drawn.
+                        if (typeof MeasurementTool !== 'undefined') MeasurementTool.removeSaved(item.id);
                         return true;
                     }
                     return false;
@@ -181,9 +171,8 @@ const ToolSectionItem = (function() {
                 }
             },
             onToggleVisibility: async (item, visible) => {
-                if (typeof MeasurementTool !== 'undefined' && MeasurementTool.toggleVisibility) {
-                    await MeasurementTool.toggleVisibility(item.id);
-                }
+                return typeof MeasurementTool !== 'undefined'
+                    ? MeasurementTool.toggleVisibility(item.id, visible) : false;
             },
             refreshList: async () => {
                 if (typeof renderMeasurementGroupList === 'function') {
@@ -240,13 +229,14 @@ const ToolSectionItem = (function() {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             const newVisible = item.visible === false;
+            // The handler saves it and reports false if that failed.
+            const saved = config.onToggleVisibility
+                ? await config.onToggleVisibility(item, newVisible)
+                : true;
+            if (saved === false) return;
             item.visible = newVisible;
             btn.textContent = newVisible ? '👁' : '🚫';
             btn.title = newVisible ? 'Hide' : 'Show';
-            
-            if (config.onToggleVisibility) {
-                await config.onToggleVisibility(item, newVisible);
-            }
         });
         
         return btn;

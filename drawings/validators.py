@@ -1,4 +1,5 @@
 """Custom validators for the drawings app."""
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils.deconstruct import deconstructible
 
@@ -10,6 +11,17 @@ except ImportError:
     HAS_MAGIC = False
 
 
+def detected_mime(header):
+    """The MIME type python-magic reports for ``header``, or None when it
+    isn't installed or fails (the header checks still apply then)."""
+    if not HAS_MAGIC:
+        return None
+    try:
+        return magic.from_buffer(header, mime=True)
+    except Exception:
+        return None
+
+
 @deconstructible
 class PDFFileValidator:
     """
@@ -18,18 +30,19 @@ class PDFFileValidator:
     not just the extension.
     """
     allowed_mime_types = ['application/pdf']
-    max_size = 50 * 1024 * 1024  # 50 MB default
 
     def __init__(self, max_size=None):
-        if max_size is not None:
-            self.max_size = max_size
+        # None: the DOCUWEAVER_MAX_UPLOAD_MB setting, read when a file is checked.
+        self.max_size = max_size
 
     def __call__(self, file):
         # Check file size
-        if file.size > self.max_size:
+        max_size = self.max_size or getattr(settings, 'DOCUWEAVER_MAX_UPLOAD_MB', 50) * 1024 * 1024
+        if file.size > max_size:
             raise ValidationError(
                 f'File size ({file.size / 1024 / 1024:.1f} MB) exceeds maximum allowed size '
-                f'({self.max_size / 1024 / 1024:.1f} MB).'
+                f'({max_size / 1024 / 1024:.1f} MB).'
+                + ('' if self.max_size else ' An administrator can raise DOCUWEAVER_MAX_UPLOAD_MB.')
             )
 
         # Check file extension
@@ -47,17 +60,13 @@ class PDFFileValidator:
                 'Invalid PDF file. The file content does not match PDF format.'
             )
 
-        # Additional check using python-magic if available
-        if HAS_MAGIC:
-            try:
-                mime_type = magic.from_buffer(file_header, mime=True)
-                if mime_type not in self.allowed_mime_types:
-                    raise ValidationError(
-                        f'Invalid file type: {mime_type}. Only PDF files are allowed.'
-                    )
-            except Exception:
-                # If magic fails, rely on the header check above
-                pass
+        # Additional check using python-magic if available. (Only the call is
+        # guarded: the rejection used to be caught by its own except.)
+        mime_type = detected_mime(file_header)
+        if mime_type is not None and mime_type not in self.allowed_mime_types:
+            raise ValidationError(
+                f'Invalid file type: {mime_type}. Only PDF files are allowed.'
+            )
 
     def __eq__(self, other):
         return (
@@ -99,28 +108,22 @@ class ImageFileValidator:
         file_header = file.read(2048)
         file.seek(0)
 
-        if HAS_MAGIC:
-            try:
-                mime_type = magic.from_buffer(file_header, mime=True)
-                if mime_type not in self.allowed_mime_types:
-                    raise ValidationError(
-                        f'Invalid file type: {mime_type}. Only image files are allowed.'
-                    )
-                return  # Magic check passed, no need for fallback
-            except Exception:
-                pass  # Fall through to basic header checks
-
-        # Basic header checks (fallback when magic is unavailable or fails)
-        # PNG: starts with \x89PNG
-        # JPEG: starts with \xff\xd8\xff
-        # GIF: starts with GIF87a or GIF89a
+        # The header must be one of the allowed formats whether or not
+        # python-magic is installed; magic, when present, must agree.
         is_png = file_header.startswith(b'\x89PNG')
         is_jpeg = file_header.startswith(b'\xff\xd8\xff')
         is_gif = file_header.startswith(b'GIF87a') or file_header.startswith(b'GIF89a')
+        is_webp = file_header[:4] == b'RIFF' and file_header[8:12] == b'WEBP'
 
-        if not (is_png or is_jpeg or is_gif):
+        if not (is_png or is_jpeg or is_gif or is_webp):
             raise ValidationError(
                 'Invalid image file. The file content does not match expected image format.'
+            )
+
+        mime_type = detected_mime(file_header)
+        if mime_type is not None and mime_type not in self.allowed_mime_types:
+            raise ValidationError(
+                f'Invalid file type: {mime_type}. Only image files are allowed.'
             )
 
     def __eq__(self, other):

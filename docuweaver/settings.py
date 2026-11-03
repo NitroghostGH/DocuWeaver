@@ -168,6 +168,9 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
+        # Must stay last: requires a CSRF token from requests the classes
+        # above didn't sign in (see drawings/auth.py).
+        'drawings.auth.CsrfCheckWithoutLogin',
     ],
 }
 
@@ -175,11 +178,16 @@ REST_FRAMEWORK = {
 # Uploads
 # ---------------------------------------------------------------------------
 
-# Maximum size of an uploaded file held in memory / request body (default 10 MB).
-# PDF drawings can be large; raise DOCUWEAVER_MAX_UPLOAD_MB if uploads are rejected.
-_max_upload = int(os.getenv('DOCUWEAVER_MAX_UPLOAD_MB', '10')) * 1024 * 1024
-DATA_UPLOAD_MAX_MEMORY_SIZE = _max_upload
-FILE_UPLOAD_MAX_MEMORY_SIZE = _max_upload
+# Largest PDF accepted for upload, in MB. Engineering drawing sets are often
+# well over 10 MB. (Before 1.0.2 this setting only changed when uploads were
+# buffered to disk; PDFs were capped at 50 MB whatever it said.)
+DOCUWEAVER_MAX_UPLOAD_MB = int(os.getenv('DOCUWEAVER_MAX_UPLOAD_MB', '50'))
+# Request bodies other than files (JSON, form fields). Uploaded files over
+# Django's default 2.5 MB are spooled to a temporary file, not held in memory.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
+# Largest size a project file (.docuweaver) may unpack to when imported.
+DOCUWEAVER_MAX_IMPORT_MB = int(os.getenv('DOCUWEAVER_MAX_IMPORT_MB', '2048'))
 
 # ---------------------------------------------------------------------------
 # Security headers

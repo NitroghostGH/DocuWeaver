@@ -1,10 +1,9 @@
 /**
  * DocuWeaver Canvas Editor - Tools Module
  * 
- * Handles tool modes and tool-specific click/move/end handlers.
- * Includes: pan, select, crop, calibrate, origin, verify-asset, measure.
- * setMode also switches to split mode, but the split handlers live in split.js
- * (canvas_init.js calls DW.split.* directly).
+ * Handles tool modes and the select and measure click handlers. The other
+ * tools' canvas events go straight to their own modules from canvas_init.js:
+ * crop.js (cuts), split.js, and calibration.js (scale, origin, verify).
  *
  * Depends on: namespace.js
  */
@@ -22,8 +21,6 @@
      */
     function setMode(mode) {
         const canvas = state.canvas;
-        console.log('setMode:', mode, '(was:', state.currentMode + ')');
-        
         // Clean up measurement overlays when leaving measure mode
         if (state.currentMode === 'measure' && mode !== 'measure') {
             if (typeof clearMeasurements === 'function') {
@@ -82,10 +79,8 @@
                 break;
         }
         
-        // Reset calibration points when entering calibrate mode
-        if (mode === 'calibrate') {
-            state.calibrationPoints = [];
-        }
+        // A scale pick never carries over into or out of the Scale tool
+        if (typeof clearCalibrationPick === 'function') clearCalibrationPick();
         
         // Start measurement tool when entering measure mode
         if (mode === 'measure' && typeof MeasurementTool !== 'undefined') {
@@ -102,7 +97,10 @@
                 obj.evented = isSelectMode || isCropOrSplitMode;
                 obj.hoverCursor = isCropOrSplitMode ? 'crosshair' : 'move';
             }
-            if (obj.isSavedMeasurement) {
+            // Assets only take mouse events in select mode. Otherwise a pan
+            // drag that starts on a marker moved it and saved an adjustment,
+            // and measure clicks on a marker selected it.
+            if (obj.isSavedMeasurement || obj.assetData) {
                 obj.selectable = isSelectMode;
                 obj.evented = isSelectMode;
             }
@@ -135,187 +133,6 @@
         }
     }
     
-    // ==================== Crop Tool ====================
-    
-    function handleCropClick(opt) {
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        // Find sheet under click
-        let clickedSheetObj = findSheetAtPoint(opt, pointer);
-        
-        if (!state.isCropping) {
-            // Start crop line
-            if (clickedSheetObj) {
-                state.isCropping = true;
-                state.targetSheetObj = clickedSheetObj;
-                state.cutLineStart = pointer;
-                
-                state.cutLine = new fabric.Line(
-                    [pointer.x, pointer.y, pointer.x, pointer.y],
-                    {
-                        stroke: '#e74c3c',
-                        strokeWidth: 2,
-                        strokeDashArray: [5, 5],
-                        selectable: false,
-                        evented: false
-                    }
-                );
-                canvas.add(state.cutLine);
-            }
-        }
-    }
-    
-    function handleCropMove(opt) {
-        if (!state.isCropping || !state.cutLine || !state.cutLineStart) return;
-        
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        state.cutLine.set({ x2: pointer.x, y2: pointer.y });
-        
-        if (typeof updateCutStats === 'function') {
-            updateCutStats(state.cutLineStart, pointer);
-        }
-        
-        canvas.renderAll();
-    }
-    
-    function handleCropEnd(opt) {
-        if (!state.isCropping || !state.cutLine || !state.cutLineStart || !state.targetSheetObj) return;
-        
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        // Calculate line length
-        const dx = pointer.x - state.cutLineStart.x;
-        const dy = pointer.y - state.cutLineStart.y;
-        const lineLength = Math.sqrt(dx * dx + dy * dy);
-        
-        if (lineLength > 20 && typeof applyCutMask === 'function') {
-            applyCutMask(state.targetSheetObj, state.cutLineStart, pointer);
-        }
-        
-        // Clean up
-        canvas.remove(state.cutLine);
-        state.cutLine = null;
-        state.cutLineStart = null;
-        state.targetSheetObj = null;
-        state.isCropping = false;
-        
-        if (typeof removeCutStats === 'function') {
-            removeCutStats();
-        }
-    }
-    
-    // ==================== Calibration Tool ====================
-    
-    function handleCalibrationClick(opt) {
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        state.calibrationPoints.push({ x: pointer.x, y: pointer.y });
-        
-        // Draw calibration point marker
-        const marker = new fabric.Circle({
-            radius: 5,
-            fill: '#FF0000',
-            left: pointer.x,
-            top: pointer.y,
-            originX: 'center',
-            originY: 'center',
-            selectable: false,
-            calibrationMarker: true
-        });
-        canvas.add(marker);
-        
-        if (state.calibrationPoints.length === 2) {
-            // Calculate pixel distance between points
-            const p1 = state.calibrationPoints[0];
-            const p2 = state.calibrationPoints[1];
-            const pixelDist = Math.sqrt(
-                Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
-            );
-            
-            document.getElementById('pixel-distance').value = pixelDist.toFixed(2);
-            document.getElementById('calibrateModal').style.display = 'block';
-        }
-    }
-    
-    // ==================== Origin Tool ====================
-    
-    async function handleOriginClick(opt) {
-        const canvas = state.canvas;
-        const pointer = canvas.getPointer(opt.e);
-        
-        try {
-            const response = await fetch(`/api/projects/${PROJECT_ID}/`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': DW.getCSRFToken()
-                },
-                body: JSON.stringify({
-                    origin_x: pointer.x,
-                    origin_y: pointer.y
-                })
-            });
-            
-            if (response.ok) {
-                PROJECT_DATA.origin_x = pointer.x;
-                PROJECT_DATA.origin_y = pointer.y;
-                
-                if (typeof drawOriginMarker === 'function') {
-                    drawOriginMarker(pointer.x, pointer.y);
-                }
-                
-                DW.showToast('Origin set successfully', 'success');
-                setMode('pan');
-            }
-        } catch (error) {
-            console.error('Error setting origin:', error);
-            DW.showToast('Failed to set origin', 'error');
-        }
-    }
-    
-    // ==================== Verify Asset Tool ====================
-    
-    function handleVerifyClick(opt) {
-        const canvas = state.canvas;
-        const select = document.getElementById('verify-asset-select');
-        
-        if (!select.value) {
-            DW.showToast('Please select an asset first', 'warning');
-            return;
-        }
-        
-        const pointer = canvas.getPointer(opt.e);
-        state.refAssetId = select.value;
-        state.refPixelX = pointer.x;
-        state.refPixelY = pointer.y;
-        
-        // Sync to legacy globals
-        window.refAssetId = state.refAssetId;
-        window.refPixelX = state.refPixelX;
-        window.refPixelY = state.refPixelY;
-        
-        if (typeof drawVerifyRefMarker === 'function') {
-            drawVerifyRefMarker(pointer.x, pointer.y);
-        }
-        
-        // Update info display
-        const placedSpan = document.getElementById('verify-ref-placed');
-        if (placedSpan) {
-            placedSpan.textContent = `Reference placed at pixel (${state.refPixelX.toFixed(0)}, ${state.refPixelY.toFixed(0)})`;
-            placedSpan.style.color = 'var(--border-layer-selected, #28a745)';
-        }
-        
-        // Refresh assets
-        if (typeof refreshAssets === 'function') {
-            refreshAssets();
-        }
-    }
-    
     // ==================== Measure Tool ====================
     
     function handleMeasureClick(opt) {
@@ -325,68 +142,15 @@
         MeasurementTool.addPoint(pointer.x, pointer.y);
     }
     
-    // ==================== Helper Functions ====================
-    
-    /**
-     * Find sheet at a given point, trying multiple methods
-     */
-    function findSheetAtPoint(opt, pointer) {
-        const canvas = state.canvas;
-        let clickedSheetObj = null;
-        
-        // Method 1: Use opt.target if available
-        if (opt.target && opt.target.sheetData) {
-            clickedSheetObj = opt.target;
-        }
-        
-        // Method 2: Use findTarget
-        if (!clickedSheetObj) {
-            const target = canvas.findTarget(opt.e, true);
-            if (target && target.sheetData) {
-                clickedSheetObj = target;
-            }
-        }
-        
-        // Method 3: Manual bounding rect check
-        if (!clickedSheetObj) {
-            const sheetObjects = canvas.getObjects().filter(obj => obj.sheetData);
-            for (const obj of sheetObjects) {
-                const bounds = obj.getBoundingRect(true, true);
-                if (pointer.x >= bounds.left && pointer.x <= bounds.left + bounds.width &&
-                    pointer.y >= bounds.top && pointer.y <= bounds.top + bounds.height) {
-                    clickedSheetObj = obj;
-                    break;
-                }
-            }
-        }
-        
-        // Method 4: Check if point is in visible area (not clipped)
-        if (clickedSheetObj && clickedSheetObj._clipPolygon) {
-            if (typeof isPointInVisibleArea === 'function' && 
-                !isPointInVisibleArea(clickedSheetObj, pointer)) {
-                clickedSheetObj = null;
-            }
-        }
-        
-        return clickedSheetObj;
-    }
-    
     // ==================== Public API ====================
     
     DW.tools = {
         setMode,
         handleSelectClick,
-        handleCropClick,
-        handleCropMove,
-        handleCropEnd,
-        handleCalibrationClick,
-        handleOriginClick,
-        handleVerifyClick,
         handleMeasureClick
     };
     
     // Expose setMode globally for backward compatibility
     window.setMode = setMode;
     
-    console.log('DocuWeaver tools module loaded');
 })();

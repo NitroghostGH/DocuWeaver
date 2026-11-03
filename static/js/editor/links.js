@@ -26,18 +26,7 @@
             return;
         }
 
-        // Only render if links are visible
-        if (!state.linksVisible) {
-            canvas.renderAll();
-            return;
-        }
-
         state.links.forEach(link => {
-            // Check if link's group is visible
-            if (link.layer_group && state.groupVisibility[link.layer_group] === false) {
-                return;
-            }
-
             if (!link.coordinates || link.coordinates.length < 2) {
                 return;
             }
@@ -60,26 +49,16 @@
                 linkData: link
             });
 
+            polyline.visible = state.linksVisible !== false &&
+                (typeof isItemShown === 'function' ? isItemShown(link, 'link') : link.visible !== false);
             canvas.add(polyline);
         });
 
-        // Position links above sheets and OSM but below assets
-        const objects = canvas.getObjects();
-        let insertIndex = 0;
-        objects.forEach((obj, idx) => {
-            if (obj.sheetData || obj.isOSMTile) {
-                insertIndex = Math.max(insertIndex, idx + 1);
-            }
-        });
-        
-        const linkObjects = objects.filter(obj => obj.isLinkObject);
-        linkObjects.forEach(linkObj => {
-            canvas.moveTo(linkObj, insertIndex);
-        });
-
-        canvas.renderAll();
+        // Links sit above sheets and below assets (applyRenderingHierarchy).
+        if (typeof applyRenderingHierarchy === 'function') applyRenderingHierarchy();
+        canvas.requestRenderAll();
     }
-    
+
     // ==================== Link Selection ====================
     
     function selectLink(linkId) {
@@ -122,22 +101,33 @@
     function toggleLinksVisibility(visible) {
         state.linksVisible = visible;
         window.linksVisible = visible;
-        renderLinksOnCanvas();
+        if (typeof applyVisibility === 'function') applyVisibility();
     }
-    
-    function toggleLinkVisibility(linkId, visible) {
+
+    /** The eye on a link. Saved, so it stays hidden after a reload. */
+    async function toggleLinkVisibility(linkId, visible) {
         const link = state.links.find(l => l.id === linkId);
-        if (link) {
-            link.visible = visible;
+        if (!link) return false;
+        const previous = link.visible;
+        link.visible = visible;
+        if (typeof applyVisibility === 'function') applyVisibility();
+        try {
+            const response = await fetch(`/api/links/${linkId}/`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': DW.getCSRFToken() },
+                body: JSON.stringify({ visible })
+            });
+            if (!response.ok) throw new Error(await DW.responseError(response));
+            return true;
+        } catch (error) {
+            link.visible = previous;
+            if (typeof applyVisibility === 'function') applyVisibility();
+            if (typeof renderLinkGroupList === 'function') renderLinkGroupList();
+            DW.showToast('Could not save the link visibility: ' + error.message, 'error');
+            return false;
         }
-        state.canvas.getObjects().forEach(obj => {
-            if (obj.linkData && obj.linkData.id === linkId) {
-                obj.visible = visible;
-            }
-        });
-        state.canvas.renderAll();
     }
-    
+
     function clearLinksFromCanvas() {
         const canvas = state.canvas;
         const linkObjs = canvas.getObjects().filter(obj => obj.isLinkObject);
@@ -172,5 +162,4 @@
     window.clearLinksFromCanvas = clearLinksFromCanvas;
     window.renderLinkList = renderLinkList;
     
-    console.log('DocuWeaver links module loaded');
 })();

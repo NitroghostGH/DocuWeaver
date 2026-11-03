@@ -1,108 +1,208 @@
 """PDF processing service for rendering and manipulating PDFs."""
 import logging
+import math
 import os
-from io import BytesIO
+import uuid
 
 import pymupdf as fitz
 from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+# Sheets are rendered at this resolution; the export maps overlay positions
+# back to PDF points with it.
+RENDER_DPI = 150
 
-def get_pdf_layers(pdf_path):
-    """
-    Extract Optional Content Groups (layers) from a PDF.
+# Largest page we render, in pixels at RENDER_DPI. Rendering needs about
+# 7 bytes per pixel (115 MB for an A1 page, 17 Mpx), so this caps a single
+# render near 700 MB. 100 Mpx is about 2.9 m² of paper: an A0 sheet is 1 m².
+MAX_RENDER_PIXELS = 100_000_000
 
-    Returns a list of dicts: [{xref: int, name: str}, ...]
+RENDERED_DIR = 'rendered/'
+
+
+class PdfError(ValueError):
+    """A PDF we can't use. The message is written for the person uploading it."""
+
+
+def open_pdf(source):
+    """Open a PDF from a path or an uploaded file.
+
+    Raises PdfError for a file that isn't a readable PDF, is
+    password-protected, or has no pages.
     """
-    doc = fitz.open(pdf_path)
     try:
-        ocgs = doc.get_ocgs()  # {xref: {name, intent, on}}
-        layers = [{'xref': xref, 'name': info.get('name', f'Layer {xref}')}
-                  for xref, info in ocgs.items()]
-        return layers
+        if isinstance(source, (str, os.PathLike)):
+            doc = fitz.open(source)
+        elif hasattr(source, 'temporary_file_path'):
+            doc = fitz.open(source.temporary_file_path())
+        else:
+            source.seek(0)
+            data = source.read()
+            source.seek(0)
+            doc = fitz.open(stream=data, filetype='pdf')
+    except (fitz.FileDataError, RuntimeError) as e:
+        logger.info("Could not open PDF: %s", e)
+        raise PdfError("This file can't be read as a PDF. It may be damaged; "
+                       "try saving or exporting it again.") from e
+    if doc.needs_pass:
+        doc.close()
+        raise PdfError("This PDF is password-protected. Save a copy without the password and upload that.")
+    if len(doc) == 0:
+        doc.close()
+        raise PdfError("This PDF has no pages.")
+    return doc
+
+
+def document_layers(doc):
+    """The document's optional content groups (layers): [{xref, name}, ...]."""
+    return [{'xref': xref, 'name': info.get('name', f'Layer {xref}')}
+            for xref, info in doc.get_ocgs().items()]
+
+
+def _with_layers(doc, pdf_layers, visible_layers):
+    """Return ``doc`` showing only ``visible_layers`` (an empty list shows
+    every layer). If that needs a new document, ``doc`` is closed once the
+    new one is open; on an error ``doc`` is left open for the caller."""
+    if not (visible_layers and pdf_layers):
+        return doc
+    visible = set(visible_layers)
+    xrefs = [layer['xref'] for layer in pdf_layers]
+    doc.set_layer(-1, on=[x for x in xrefs if x in visible],
+                  off=[x for x in xrefs if x not in visible])
+    # MuPDF reads the layer configuration when a document is opened, so the
+    # change only affects rendering after a reopen.
+    layered = fitz.open(stream=doc.tobytes(), filetype='pdf')
+    doc.close()
+    return layered
+
+
+def _page_png(doc, page_number, dpi):
+    """Render page ``page_number`` (1-based) of ``doc``: (png_bytes, width, height)."""
+    if not 1 <= page_number <= len(doc):
+        raise PdfError(f"Page {page_number} does not exist in this PDF (it has {len(doc)} pages).")
+    page = doc[page_number - 1]
+    zoom = dpi / 72  # 72 is the default PDF resolution
+    rect = page.rect
+    if math.ceil(rect.width * zoom) * math.ceil(rect.height * zoom) > MAX_RENDER_PIXELS:
+        mm = 25.4 / 72
+        raise PdfError(
+            f"Page {page_number} is {rect.width * mm:.0f} × {rect.height * mm:.0f} mm, "
+            f"too large to render. Pages up to about "
+            f"{MAX_RENDER_PIXELS / (dpi / 25.4) ** 2 / 1e6:.1f} m² can be used (A0 is 1 m²).")
+    try:
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        # MuPDF's own PNG encoder: less memory and time than going through
+        # Pillow, and a smaller file.
+        return pix.tobytes('png'), pix.width, pix.height
+    except RuntimeError as e:
+        logger.info("Could not render page %d: %s", page_number, e)
+        raise PdfError(f"Page {page_number} of this PDF couldn't be drawn. "
+                       f"The file may be damaged; try saving or exporting it again.") from e
+
+
+def render_pdf_page(sheet, dpi=RENDER_DPI):
+    """
+    Render a PDF page to an image and save it to the sheet.
+
+    Layer visibility follows ``sheet.visible_layers``: an empty list shows
+    every layer; otherwise exactly the listed OCG xrefs are shown, so a list
+    that matches no layer (the editor sends ``[0]``) hides them all.
+
+    Raises PdfError if the page can't be rendered.
+    """
+    doc = open_pdf(sheet.pdf_file.path)
+    try:
+        if not sheet.pdf_layers:
+            sheet.pdf_layers = document_layers(doc)
+        doc = _with_layers(doc, sheet.pdf_layers, sheet.visible_layers)
+        png, width, height = _page_png(doc, sheet.page_number, dpi)
     finally:
         doc.close()
 
-
-def render_pdf_page(sheet, dpi=150):
-    """
-    Render a PDF page to an image and save it to the sheet.
-    Respects visible_layers if set (empty list = all visible).
-
-    Args:
-        sheet: Sheet model instance
-        dpi: Resolution for rendering (default 150)
-    """
-    pdf_path = sheet.pdf_file.path
-    page_number = sheet.page_number - 1  # PyMuPDF uses 0-based indexing
-
-    # Open the PDF
-    doc = fitz.open(pdf_path)
-
-    if page_number >= len(doc):
-        doc.close()
-        raise ValueError(f"Page {sheet.page_number} does not exist in PDF (has {len(doc)} pages)")
-
-    # Extract layers on first render if not already set
-    if not sheet.pdf_layers:
-        ocgs = doc.get_ocgs()
-        if ocgs:
-            sheet.pdf_layers = [
-                {'xref': xref, 'name': info.get('name', f'Layer {xref}')}
-                for xref, info in ocgs.items()
-            ]
-
-    # Apply layer visibility if specified
-    if sheet.visible_layers and sheet.pdf_layers:
-        visible_set = set(sheet.visible_layers)
-        on_names = [layer['name'] for layer in sheet.pdf_layers if layer['xref'] in visible_set]
-        off_names = [layer['name'] for layer in sheet.pdf_layers if layer['xref'] not in visible_set]
-        if on_names or off_names:
-            doc.set_layer(-1, on=on_names, off=off_names)
-
-    page = doc[page_number]
-
-    # Render at specified DPI
-    zoom = dpi / 72  # 72 is the default PDF resolution
-    matrix = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=matrix)
-
-    # Convert to PIL Image
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-    # Save to BytesIO
-    buffer = BytesIO()
-    img.save(buffer, format='PNG')
-    buffer.seek(0)
-
-    # Save to sheet
+    previous = sheet.rendered_image.name
     filename = f"sheet_{sheet.id}_page_{sheet.page_number}.png"
-    sheet.rendered_image.save(filename, ContentFile(buffer.read()), save=False)
-    sheet.image_width = pix.width
-    sheet.image_height = pix.height
-    sheet.save()
-
-    doc.close()
+    # Storage gives the new image a fresh name, so the browser can't show a
+    # cached copy of the old one.
+    sheet.rendered_image.save(filename, ContentFile(png), save=False)
+    sheet.image_width = width
+    sheet.image_height = height
+    try:
+        # Only the render's own fields: a full save would overwrite position or
+        # rotation changes made by another request while the page rendered.
+        sheet.save(update_fields=['rendered_image', 'image_width', 'image_height', 'pdf_layers'])
+    except BaseException:
+        delete_files([sheet.rendered_image.name])
+        raise
+    if previous and previous != sheet.rendered_image.name:
+        _delete_when_unused(previous)
 
     logger.info("Rendered sheet %d page %d at %d DPI (%dx%d px)",
-                sheet.id, sheet.page_number, dpi, pix.width, pix.height)
+                sheet.id, sheet.page_number, dpi, width, height)
 
     return {
-        'width': pix.width,
-        'height': pix.height,
+        'width': width,
+        'height': height,
         'path': sheet.rendered_image.path
     }
 
 
-def get_pdf_page_count(pdf_path):
-    """Get the number of pages in a PDF."""
-    doc = fitz.open(pdf_path)
-    count = len(doc)
-    doc.close()
-    logger.info("PDF %s has %d page(s)", os.path.basename(pdf_path), count)
-    return count
+def render_upload(upload, visible_layers=(), dpi=RENDER_DPI):
+    """Render every page of an uploaded PDF before any sheet is created.
+
+    Each page's PNG is saved to storage as soon as it's drawn, so only one
+    page is held in memory. Returns ``(pdf_layers, pages)``, where pages is
+    a list of ``{'page_number', 'rendered_image', 'image_width',
+    'image_height'}``. On any failure the PNGs already saved are deleted and
+    the error is raised (PdfError for a problem with the file).
+    """
+    saved = []
+    doc = open_pdf(upload)
+    try:
+        pdf_layers = document_layers(doc)
+        page_count = len(doc)
+        doc = _with_layers(doc, pdf_layers, list(visible_layers))
+        batch = uuid.uuid4().hex[:8]
+        pages = []
+        for page_number in range(1, page_count + 1):
+            png, width, height = _page_png(doc, page_number, dpi)
+            name = default_storage.save(f'{RENDERED_DIR}upload_{batch}_page_{page_number}.png', ContentFile(png))
+            saved.append(name)
+            pages.append({'page_number': page_number, 'rendered_image': name,
+                          'image_width': width, 'image_height': height})
+    except BaseException:
+        delete_files(saved)
+        raise
+    finally:
+        doc.close()
+    logger.info("Rendered %d page(s) of %s at %d DPI", len(pages), getattr(upload, 'name', upload), dpi)
+    return pdf_layers, pages
+
+
+def _delete_when_unused(name):
+    """Delete a replaced rendered image once the change is committed (a
+    rolled-back render still points at it), unless a sheet still uses it."""
+    from django.db import transaction
+
+    from ..models import Sheet
+
+    def remove():
+        if not Sheet.objects.filter(rendered_image=name).exists():
+            delete_files([name])
+
+    transaction.on_commit(remove)
+
+
+def delete_files(names):
+    """Delete stored files, ignoring ones already gone."""
+    for name in names:
+        if name:
+            try:
+                default_storage.delete(name)
+            except OSError:
+                logger.warning("Could not delete %s", name)
 
 
 def apply_crop_to_image(image_path, crop_x, crop_y, crop_width, crop_height):
@@ -131,107 +231,6 @@ def apply_crop_to_image(image_path, crop_x, crop_y, crop_width, crop_height):
     cropped = img.crop(box)
 
     return cropped
-
-
-def render_overlay_on_pdf(pdf_path, output_path, page_number, overlays, pixels_per_meter, origin_x, origin_y):
-    """
-    Render overlays onto a PDF page and save as new PDF.
-
-    Args:
-        pdf_path: Path to original PDF
-        output_path: Path for output PDF
-        page_number: Page to overlay (1-based)
-        overlays: List of overlay dicts with {x, y, icon_shape, color, size, label}
-        pixels_per_meter: Scale factor
-        origin_x, origin_y: Coordinate origin in pixels
-    """
-    doc = fitz.open(pdf_path)
-    page = doc[page_number - 1]
-
-    # Get the transformation matrix to convert from rendered image coordinates to PDF coordinates
-    # This accounts for the DPI difference
-    render_dpi = 150
-    scale = 72 / render_dpi  # Convert from rendered pixels to PDF points
-
-    for overlay in overlays:
-        # Convert meter coordinates to pixel coordinates
-        pixel_x = origin_x + (overlay['x'] * pixels_per_meter)
-        pixel_y = origin_y + (overlay['y'] * pixels_per_meter)
-
-        # Convert pixel coordinates to PDF points
-        pdf_x = pixel_x * scale
-        pdf_y = pixel_y * scale
-
-        # Parse color
-        color = parse_color(overlay.get('color', '#FF0000'))
-        size = overlay.get('size', 10) * scale
-        shape = overlay.get('icon_shape', 'circle')
-
-        # Draw the shape
-        if shape == 'circle':
-            page.draw_circle(
-                fitz.Point(pdf_x, pdf_y),
-                size / 2,
-                color=color,
-                fill=color,
-                width=1
-            )
-        elif shape == 'square':
-            rect = fitz.Rect(
-                pdf_x - size/2, pdf_y - size/2,
-                pdf_x + size/2, pdf_y + size/2
-            )
-            page.draw_rect(rect, color=color, fill=color)
-        elif shape == 'triangle':
-            points = [
-                fitz.Point(pdf_x, pdf_y - size/2),
-                fitz.Point(pdf_x - size/2, pdf_y + size/2),
-                fitz.Point(pdf_x + size/2, pdf_y + size/2)
-            ]
-            page.draw_polyline(points, color=color, fill=color, closePath=True)
-        elif shape == 'diamond':
-            points = [
-                fitz.Point(pdf_x, pdf_y - size/2),
-                fitz.Point(pdf_x + size/2, pdf_y),
-                fitz.Point(pdf_x, pdf_y + size/2),
-                fitz.Point(pdf_x - size/2, pdf_y)
-            ]
-            page.draw_polyline(points, color=color, fill=color, closePath=True)
-        elif shape == 'star':
-            # Simple 5-pointed star
-            draw_star(page, pdf_x, pdf_y, size/2, color)
-
-        # Add label if provided
-        label = overlay.get('label')
-        if label:
-            page.insert_text(
-                fitz.Point(pdf_x + size/2 + 2, pdf_y + 4),
-                label,
-                fontsize=8,
-                color=(0, 0, 0)
-            )
-
-    doc.save(output_path)
-    doc.close()
-
-    logger.info("Rendered %d overlay(s) on %s page %d -> %s",
-                len(overlays), os.path.basename(pdf_path), page_number, output_path)
-
-    return output_path
-
-
-def draw_star(page, cx, cy, radius, color):
-    """Draw a 5-pointed star."""
-    import math
-    points = []
-    for i in range(10):
-        angle = math.pi / 2 + i * math.pi / 5
-        r = radius if i % 2 == 0 else radius / 2
-        x = cx + r * math.cos(angle)
-        y = cy - r * math.sin(angle)
-        points.append(fitz.Point(x, y))
-
-    page.draw_polyline(points, color=color, fill=color, closePath=True)
 
 
 def parse_color(hex_color):

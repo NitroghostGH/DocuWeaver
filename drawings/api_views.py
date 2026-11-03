@@ -1,10 +1,12 @@
 """API views for drawings app."""
+import io
 import json
 import logging
 import math
+import os
 
 from django.db import transaction
-from django.db.models import Count
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
@@ -21,6 +23,8 @@ from .models import (
     MeasurementSet,
     Project,
     Sheet,
+    parent_creates_cycle,
+    save_fields,
 )
 from .serializers import (
     AdjustmentLogSerializer,
@@ -28,6 +32,7 @@ from .serializers import (
     CalibrateProjectSerializer,
     ImportBatchSerializer,
     LayerGroupSerializer,
+    LayerGroupTree,
     LinkSerializer,
     MeasurementSetSerializer,
     ProjectListSerializer,
@@ -35,8 +40,14 @@ from .serializers import (
     SheetSerializer,
 )
 from .services.csv_importer import import_assets_from_csv, import_links_from_csv
-from .services.export_service import export_sheet_with_overlays, generate_adjustment_report
-from .services.pdf_processor import get_pdf_page_count, render_pdf_page
+from .services.export_service import (
+    ExportError,
+    download_name,
+    export_project_pdf,
+    generate_adjustment_report,
+    report_assets,
+)
+from .services.pdf_processor import PdfError, delete_files, render_pdf_page, render_upload
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +69,18 @@ class ProjectDetail(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ProjectSerializer
 
     def get_queryset(self):
-        return ProjectSerializer.annotate_queryset(Project.objects.all())
+        qs = ProjectSerializer.annotate_queryset(Project.objects.all())
+        if self.request.method == 'GET':
+            qs = qs.prefetch_related('sheets__join_marks')
+        return qs
+
+
+CASCADE_STEP_PX = 50
+
+
+def cascade_offset(index):
+    """Starting position for a project's sheet number ``index`` (0-based)."""
+    return {'offset_x': index * CASCADE_STEP_PX, 'offset_y': index * CASCADE_STEP_PX}
 
 
 class SheetListCreate(generics.ListCreateAPIView):
@@ -70,71 +92,69 @@ class SheetListCreate(generics.ListCreateAPIView):
         ).select_related('layer_group').prefetch_related('join_marks')
 
     def create(self, request, *args, **kwargs):
-        """
-        Create sheet(s) from uploaded PDF.
-        If the PDF has multiple pages, creates a sheet for each page with sequential naming.
+        """Create a sheet for each page of an uploaded PDF.
+
+        A one-page PDF gets the given name; pages of a longer one are named
+        name-01, name-02, ... Every page is rendered before any sheet is
+        saved, so a PDF that can't be used (password-protected, damaged,
+        a page too large) is refused with a 400 and leaves nothing behind.
         """
         project = get_object_or_404(Project, pk=self.kwargs['project_pk'])
         pdf_file = request.FILES.get('pdf_file')
-        # Use provided name, or derive from PDF filename
-        base_name = request.data.get('name', '').strip()
-        if not base_name and pdf_file:
-            import os
-            base_name = os.path.splitext(pdf_file.name)[0]
-        if not base_name:
-            base_name = 'Sheet'
-
         if not pdf_file:
             return Response({'error': 'No PDF file provided'}, status=status.HTTP_400_BAD_REQUEST)
+        base_name = (request.data.get('name', '').strip()
+                     or os.path.splitext(pdf_file.name)[0] or 'Sheet')
 
-        # Save the file temporarily to get page count
-        # First, create the initial sheet to save the file
-        data = request.data.copy()
+        # dict(), not copy(): copy() deep-copies the upload, and a file large
+        # enough to be spooled to disk can't be copied (TypeError).
+        data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
         data['name'] = base_name
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        first_sheet = serializer.save(project=project, page_number=1)
 
-        # Get the page count from the saved PDF
+        # Rendering takes about a second per A1 page, so it happens before the
+        # transaction: SQLite allows one writer, and holding the lock that long
+        # would stall every other user's saves.
         try:
-            page_count = get_pdf_page_count(first_sheet.pdf_file.path)
-        except Exception:
-            # If we can't read the PDF, just render the first page
-            render_pdf_page(first_sheet)
-            return Response(self.get_serializer(first_sheet).data, status=status.HTTP_201_CREATED)
+            pdf_layers, pages = render_upload(pdf_file, serializer.validated_data.get('visible_layers') or [])
+        except PdfError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        created_sheets = []
+        # New sheets are cascaded 50 px apart so they don't all stack at
+        # (0, 0). The offset is saved, so the editor draws them where they are.
+        placed = 'offset_x' in data or 'offset_y' in data
+        width = len(str(len(pages)))
+        saved_pdf = None
+        try:
+            # Stored once, by name, and shared by every page's sheet.
+            field = Sheet._meta.get_field('pdf_file')
+            saved_pdf = field.storage.save(field.generate_filename(None, pdf_file.name), pdf_file,
+                                           max_length=field.max_length)
+            with transaction.atomic():
+                existing = project.sheets.count()
+                created = []
+                for page in pages:
+                    n = page['page_number']
+                    fields = {**page, 'pdf_file': saved_pdf, 'pdf_layers': pdf_layers}
+                    if len(pages) > 1:
+                        fields['name'] = f"{base_name}-{str(n).zfill(width)}"
+                    if n == 1:
+                        sheet = serializer.save(project=project,
+                                                **({} if placed else cascade_offset(existing)), **fields)
+                        position = {'offset_x': sheet.offset_x, 'offset_y': sheet.offset_y}
+                    else:
+                        sheet = Sheet.objects.create(
+                            project=project, layer_group=created[0].layer_group,
+                            visible_layers=created[0].visible_layers,
+                            **(position if placed else cascade_offset(existing + n - 1)), **fields)
+                    created.append(sheet)
+        except BaseException:
+            delete_files([p['rendered_image'] for p in pages] + [saved_pdf])
+            raise
 
-        if page_count == 1:
-            # Single page PDF - just render and return
-            render_pdf_page(first_sheet)
-            created_sheets.append(first_sheet)
-        else:
-            # Multi-page PDF - update first sheet name and create additional sheets
-            # Format: name-01, name-02, etc.
-            width = len(str(page_count))  # Determine padding width
+        return Response(self.get_serializer(created, many=True).data, status=status.HTTP_201_CREATED)
 
-            # Update first sheet with sequential name
-            first_sheet.name = f"{base_name}-{str(1).zfill(width)}"
-            first_sheet.save()
-            render_pdf_page(first_sheet)
-            created_sheets.append(first_sheet)
-
-            # Create sheets for remaining pages
-            for page_num in range(2, page_count + 1):
-                sheet_name = f"{base_name}-{str(page_num).zfill(width)}"
-                sheet = Sheet.objects.create(
-                    project=project,
-                    name=sheet_name,
-                    pdf_file=first_sheet.pdf_file,  # Reuse the same PDF file
-                    page_number=page_num
-                )
-                render_pdf_page(sheet)
-                created_sheets.append(sheet)
-
-        # Return all created sheets
-        response_serializer = self.get_serializer(created_sheets, many=True)
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
 class SheetDetail(generics.RetrieveUpdateDestroyAPIView):
     queryset = Sheet.objects.all()
@@ -153,6 +173,8 @@ def render_sheet(request, pk):
             'width': sheet.image_width,
             'height': sheet.image_height
         })
+    except PdfError as e:
+        return Response({'status': 'error', 'message': str(e)}, status=400)
     except Exception as e:
         logger.error("Failed to render sheet %d: %s", pk, e)
         return Response({'status': 'error', 'message': 'Failed to render sheet'}, status=500)
@@ -167,19 +189,26 @@ def set_sheet_layers(request, pk):
     if visible_layers is None:
         return Response({'error': 'visible_layers is required'}, status=400)
 
-    if not isinstance(visible_layers, list):
+    if not isinstance(visible_layers, list) or not all(
+        isinstance(x, int) and not isinstance(x, bool) for x in visible_layers
+    ):
         return Response({'error': 'visible_layers must be a list of xref integers'}, status=400)
 
+    # Keep the old value until the render succeeds, so a failed render
+    # doesn't leave the sheet stuck with a layer setting it can't draw.
+    previous = sheet.visible_layers
     sheet.visible_layers = visible_layers
-    sheet.save(update_fields=['visible_layers'])
-
     try:
         render_pdf_page(sheet)
-        serializer = SheetSerializer(sheet, context={'request': request})
-        return Response(serializer.data)
+    except PdfError as e:
+        return Response({'status': 'error', 'message': str(e)}, status=400)
     except Exception as e:
+        sheet.visible_layers = previous
         logger.error("Failed to re-render sheet %d with layers: %s", pk, e)
         return Response({'status': 'error', 'message': 'Failed to render sheet with layer changes'}, status=500)
+    sheet.save(update_fields=['visible_layers'])
+    serializer = SheetSerializer(sheet, context={'request': request})
+    return Response(serializer.data)
 
 
 class AssetListCreate(generics.ListCreateAPIView):
@@ -236,7 +265,7 @@ def adjust_asset(request, pk):
     asset.adjusted_x = new_x
     asset.adjusted_y = new_y
     asset.is_adjusted = True
-    asset.save()
+    save_fields(asset, ['adjusted_x', 'adjusted_y', 'is_adjusted'])
 
     serializer = AssetSerializer(asset)
     return Response(serializer.data)
@@ -279,50 +308,44 @@ def import_csv(request, project_pk):
         return Response({'error': 'CSV import failed'}, status=400)
 
 
-@api_view(['POST'])
+@api_view(['GET'])
 def export_project(request, project_pk):
-    """Export sheets with asset overlays as PDFs."""
+    """Download the project's sheets with asset markers as one PDF.
+
+    ``?sheets=3,5`` limits it to those sheets. Hidden sheets and assets are
+    left out (see export_project_pdf).
+    """
     project = get_object_or_404(Project, pk=project_pk)
-    sheet_ids = request.data.get('sheet_ids', [])
-
-    if not sheet_ids:
-        sheets = project.sheets.all()
-    else:
-        sheets = project.sheets.filter(id__in=sheet_ids)
-
+    sheet_ids = None
+    if request.query_params.get('sheets'):
+        try:
+            sheet_ids = {int(v) for v in request.query_params['sheets'].split(',') if v.strip()}
+        except ValueError:
+            return Response({'error': 'sheets must be a comma-separated list of sheet ids'}, status=400)
     try:
-        results = []
-        for sheet in sheets:
-            output_path = export_sheet_with_overlays(sheet, project.assets.all())
-            results.append({
-                'sheet_id': sheet.id,
-                'sheet_name': sheet.name,
-                'output_path': output_path
-            })
-        logger.info("Exported %d sheet(s) for project %d", len(results), project_pk)
-        return Response({'status': 'success', 'exports': results})
-    except Exception as e:
-        logger.error("Export failed for project %d: %s", project_pk, e)
-        return Response({'error': str(e)}, status=500)
+        pdf = export_project_pdf(project, sheet_ids)
+    except ExportError as e:
+        return Response({'error': str(e)}, status=400)
+    logger.info("Exported project %d as PDF (%d bytes)", project_pk, len(pdf))
+    return FileResponse(io.BytesIO(pdf), as_attachment=True, content_type='application/pdf',
+                        filename=download_name(project.name, 'pdf'))
 
 
 @api_view(['GET'])
 def adjustment_report(request, project_pk):
     """Generate adjustment report for a project."""
     project = get_object_or_404(Project, pk=project_pk)
-    format_type = request.query_params.get('format', 'json')
+    # Not 'format': DRF reserves ?format= for renderer selection and 404s on
+    # values it has no renderer for, so ?format=csv never reached this view.
+    format_type = request.query_params.get('output', 'json')
 
-    adjusted_assets = project.assets.filter(is_adjusted=True).annotate(
-        adjustment_count=Count('adjustment_logs')
-    )
+    adjusted_assets = report_assets(project)
+    if format_type == 'csv':
+        return generate_adjustment_report(project, adjusted_assets)
+
     logs = AdjustmentLog.objects.filter(
         asset__project=project
     ).select_related('asset').order_by('-timestamp')
-
-    if format_type == 'csv':
-        return generate_adjustment_report(project, adjusted_assets, logs, format_type='csv')
-
-    # JSON response
     report = {
         'project': project.name,
         'total_assets': project.assets.count(),
@@ -357,7 +380,7 @@ def column_presets(request):
 @api_view(['GET'])
 def import_batch_list(request, project_pk):
     """List import batches for a project."""
-    batches = ImportBatch.objects.filter(project_id=project_pk)
+    batches = ImportBatchSerializer.annotate_queryset(ImportBatch.objects.filter(project_id=project_pk))
     serializer = ImportBatchSerializer(batches, many=True)
     return Response(serializer.data)
 
@@ -376,10 +399,20 @@ def import_batch_delete(request, pk):
         logger.info("Reassigned %d assets in batch %d to type '%s'", updated, pk, asset_type_name)
         return Response({'updated': updated, 'asset_type': asset_type_name})
     project = batch.project
-    asset_count = batch.assets.count()
-    batch.assets.all().delete()
-    batch.delete()
-    logger.info("Deleted import batch %d (%d assets)", pk, asset_count)
+    with transaction.atomic():
+        # Only what this batch created: assets and links that a later import
+        # repeated still belong to their first batch (see csv_importer).
+        asset_count, _ = batch.assets.all().delete()
+        link_count, _ = batch.links.all().delete()
+        folder = LayerGroup.objects.filter(import_batch=batch).first()
+        batch.delete()
+        # The folder the import created goes too, unless the user has put
+        # something else in it.
+        if folder and not (folder.assets.exists() or folder.links_in_group.exists()
+                           or folder.sheets_in_group.exists() or folder.measurements_in_group.exists()
+                           or folder.child_groups.exists()):
+            folder.delete()
+    logger.info("Deleted import batch %d (%d assets, %d links)", pk, asset_count, link_count)
 
     # Clear calibration if no assets remain
     if project.assets.count() == 0:
@@ -415,10 +448,13 @@ def calibrate_project(request, pk):
 
     data = serializer.validated_data
 
+    changed = []
+
     # Scale calibration
     if 'pixel_distance' in data and 'real_distance' in data:
         project.pixels_per_meter = data['pixel_distance'] / data['real_distance']
         project.scale_calibrated = True
+        changed += ['pixels_per_meter', 'scale_calibrated']
         logger.info("Project %d calibrated: %.2f px/m (pixel_dist=%.2f, real_dist=%.2f)",
                      project.pk, project.pixels_per_meter, data['pixel_distance'], data['real_distance'])
 
@@ -431,8 +467,9 @@ def calibrate_project(request, pk):
     for field in simple_fields:
         if field in data:
             setattr(project, field, data[field])
+            changed.append(field)
 
-    project.save()
+    save_fields(project, changed)
 
     return Response({
         'pixels_per_meter': project.pixels_per_meter,
@@ -473,9 +510,19 @@ def split_sheet(request, pk):
 
     cut_entry = {'p1': {'x': p1_x, 'y': p1_y}, 'p2': {'x': p2_x, 'y': p2_y}}
 
+    new_sheet = None
+
+    def discard_render():
+        # The rows roll back, but the new piece's image is already on disk.
+        if new_sheet is not None and new_sheet.rendered_image:
+            delete_files([new_sheet.rendered_image.name])
+
     try:
         with transaction.atomic():
-            # Create new sheet (copy of original) with opposite cut
+            # Both pieces keep the cuts the sheet already had: the new piece
+            # is the other side of this cut, not the other side of the whole
+            # uncut page. It also keeps the sheet's PDF layer choice and folder.
+            earlier_cuts = list(original.cuts_json or [])
             new_sheet = Sheet.objects.create(
                 project=original.project,
                 name=f"{original.name}-split",
@@ -485,20 +532,24 @@ def split_sheet(request, pk):
                 offset_y=original.offset_y,
                 rotation=original.rotation,
                 z_index=original.z_index + 1,
-                cuts_json=[{**cut_entry, 'flipped': True}],
+                cuts_json=earlier_cuts + [{**cut_entry, 'flipped': True}],
+                pdf_layers=original.pdf_layers,
+                visible_layers=original.visible_layers,
+                layer_group=original.layer_group,
             )
 
             # Render the new sheet's image
             render_pdf_page(new_sheet)
 
-            # Append cut to original sheet's existing cuts
-            original_cuts = list(original.cuts_json or [])
-            original_cuts.append({**cut_entry, 'flipped': False})
-            original.cuts_json = original_cuts
-            original.save()
+            original.cuts_json = earlier_cuts + [{**cut_entry, 'flipped': False}]
+            save_fields(original, ['cuts_json'])
 
         logger.info("Sheet %d split into %d and %d", original.pk, original.pk, new_sheet.pk)
+    except PdfError as e:
+        discard_render()
+        return Response({'error': str(e)}, status=400)
     except Exception as e:
+        discard_render()
         logger.error("Failed to split sheet %d: %s", pk, e)
         return Response({'error': 'Split failed'}, status=500)
 
@@ -537,7 +588,9 @@ def import_links_csv(request, project_pk):
     """Import links from CSV file."""
     project = get_object_or_404(Project, pk=project_pk)
 
-    csv_file = request.FILES.get('csv_file')
+    # The editor sends 'file' (as the asset import does); 'csv_file' is the
+    # older name, still accepted for scripts that use it.
+    csv_file = request.FILES.get('file') or request.FILES.get('csv_file')
     if not csv_file:
         return Response({'error': 'No file provided'}, status=400)
 
@@ -566,21 +619,29 @@ def import_links_csv(request, project_pk):
 # ============================================================================
 
 class LayerGroupListCreate(generics.ListCreateAPIView):
-    """List and create layer groups for a project."""
+    """List and create layer groups for a project.
+
+    GET returns the top-level folders (``?top_level=false``: every folder),
+    optionally only one ``?type=``, each with its subfolders nested. The
+    editor asks once, without a type, and sorts the folders by type itself.
+    """
     serializer_class = LayerGroupSerializer
 
     def get_queryset(self):
-        queryset = LayerGroup.objects.filter(
-            project_id=self.kwargs['project_pk']
-        ).prefetch_related('child_groups')
-        # Filter by group_type if specified
-        group_type = self.request.query_params.get('type')
-        if group_type in ('asset', 'link', 'sheet'):
-            queryset = queryset.filter(group_type=group_type)
-        # By default, only return top-level groups (those without parents)
-        if self.request.query_params.get('top_level', 'true').lower() == 'true':
-            queryset = queryset.filter(parent_group__isnull=True)
-        return queryset
+        return LayerGroup.objects.filter(project_id=self.kwargs['project_pk'])
+
+    def list(self, request, *args, **kwargs):
+        # Counts and subfolders for the whole tree in a fixed number of
+        # queries; serializing folder by folder took four per folder.
+        tree = LayerGroupTree(self.kwargs['project_pk'])
+        groups = tree.groups
+        group_type = request.query_params.get('type')
+        if group_type in dict(LayerGroup.GROUP_TYPE_CHOICES):
+            groups = [g for g in groups if g.group_type == group_type]
+        if request.query_params.get('top_level', 'true').lower() == 'true':
+            groups = [g for g in groups if g.parent_group_id is None]
+        context = {**self.get_serializer_context(), 'layer_tree': tree}
+        return Response(LayerGroupSerializer(groups, many=True, context=context).data)
 
     def perform_create(self, serializer):
         project = get_object_or_404(Project, pk=self.kwargs['project_pk'])
@@ -611,15 +672,11 @@ def join_groups(request, project_pk):
     if parent_id == child_id:
         return Response({'error': 'Cannot join a group to itself'}, status=400)
 
-    # Prevent circular references by walking the full ancestor chain
-    ancestor = parent
-    while ancestor:
-        if ancestor.id == child.id:
-            return Response({'error': 'Cannot create circular group reference'}, status=400)
-        ancestor = ancestor.parent_group
+    if parent_creates_cycle(child, parent):
+        return Response({'error': 'Cannot create circular group reference'}, status=400)
 
     child.parent_group = parent
-    child.save()
+    save_fields(child, ['parent_group'])
 
     logger.info("Group %d joined to parent %d", child.id, parent.id)
     return Response({
@@ -639,7 +696,7 @@ def unjoin_group(request, pk):
 
     old_parent_id = group.parent_group.id
     group.parent_group = None
-    group.save()
+    save_fields(group, ['parent_group'])
 
     logger.info("Group %d unjoined from parent %d", group.id, old_parent_id)
     return Response({
@@ -659,7 +716,7 @@ def toggle_group_visibility(request, pk):
     else:
         group.visible = not group.visible
 
-    group.save()
+    save_fields(group, ['visible'])
 
     return Response({
         'id': group.id,
@@ -713,7 +770,7 @@ def move_item_to_group(request, pk):
     model, _ = ITEM_TYPE_MODELS[item_type]
     item = get_object_or_404(model, pk=item_id, project=group.project)
     item.layer_group = group
-    item.save()
+    save_fields(item, ['layer_group'])
     return Response({'status': 'moved', 'item_type': item_type, 'item_id': item_id, 'group_id': pk})
 
 
@@ -819,7 +876,7 @@ def toggle_measurement_visibility(request, pk):
     else:
         measurement.visible = not measurement.visible
 
-    measurement.save()
+    save_fields(measurement, ['visible'])
 
     return Response({
         'id': measurement.id,

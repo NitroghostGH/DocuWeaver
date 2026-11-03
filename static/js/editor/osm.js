@@ -114,7 +114,6 @@
     }
     
     function pruneOSMTileCache(requiredSpace) {
-        console.log(`Pruning cache: need ${(requiredSpace / 1024 / 1024).toFixed(2)} MB`);
         
         const cacheKeys = Object.keys(state.osmTileCache);
         let freedSpace = 0;
@@ -131,7 +130,6 @@
             deletedCount++;
         }
         
-        console.log(`Pruned ${deletedCount} tiles, freed ${(freedSpace / 1024 / 1024).toFixed(2)} MB`);
     }
     
     function clearOSMTileCache() {
@@ -139,7 +137,6 @@
         state.osmTileCacheStats.currentSize = 0;
         state.osmTileCacheStats.hits = 0;
         state.osmTileCacheStats.misses = 0;
-        console.log('OSM tile cache cleared');
     }
     
     function getOSMCacheStats() {
@@ -169,14 +166,11 @@
         
         const isDegrees = ['degrees', 'gda94_geo'].includes(PROJECT_DATA.coord_unit);
         if (!isDegrees) {
-            console.warn('OSM layer requires lat/lon coordinate system');
             return;
         }
-        
+
         const canvas = state.canvas;
         const zoom = forcedZoom !== null ? forcedZoom : calculateOSMZoom();
-        
-        console.log(`Rendering OSM at zoom level ${zoom}`);
         
         // Get canvas viewport bounds
         const vpt = canvas.viewportTransform;
@@ -285,12 +279,13 @@
         
         state.osmCurrentZoom = zoom;
         
-        // Load new tiles
+        // Load new tiles. A tile still on its way isn't requested again: it
+        // used to be added twice, and the copies' opacity stacked.
         let tilesLoading = 0;
         for (let tileX = tileTL.x; tileX <= tileBR.x; tileX++) {
             for (let tileY = tileTL.y; tileY <= tileBR.y; tileY++) {
                 const tileKey = `${tileX}_${tileY}_${zoom}`;
-                if (!state.osmLoadedTiles.has(tileKey)) {
+                if (!state.osmLoadedTiles.has(tileKey) && !state.osmPendingTiles.has(tileKey)) {
                     loadOSMTile(tileX, tileY, zoom);
                     tilesLoading++;
                 }
@@ -307,65 +302,77 @@
                         state.osmLoadedTiles.delete(tileKey);
                     }
                 });
-                canvas.renderAll();
+                canvas.requestRenderAll();
             }, 200);
         }
     }
     
+    // Bumped when the layer is cleared, so tiles requested before that are
+    // dropped when they arrive.
+    let osmGeneration = 0;
+
+    function tileStillWanted(generation, zoom, darkMode) {
+        return generation === osmGeneration && state.osmEnabled &&
+            state.osmCurrentZoom === zoom && state.osmDarkMode === darkMode;
+    }
+
     function loadOSMTile(tileX, tileY, zoom) {
-        let url;
-        const useDarkTileServer = true;
-        
-        if (state.osmDarkMode && useDarkTileServer) {
-            url = `https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/${zoom}/${tileX}/${tileY}.png`;
-        } else {
-            url = `https://tile.openstreetmap.org/${zoom}/${tileX}/${tileY}.png`;
-        }
-        
-        // Check cache
-        const cachedDataUrl = getOSMTileFromCache(tileX, tileY, zoom, state.osmDarkMode);
+        const tileKey = `${tileX}_${tileY}_${zoom}`;
+        const darkMode = state.osmDarkMode;
+        const generation = osmGeneration;
+        const url = darkMode
+            ? `https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/${zoom}/${tileX}/${tileY}.png`
+            : `https://tile.openstreetmap.org/${zoom}/${tileX}/${tileY}.png`;
+
+        state.osmPendingTiles.add(tileKey);
+        const done = () => state.osmPendingTiles.delete(tileKey);
+
+        const cachedDataUrl = getOSMTileFromCache(tileX, tileY, zoom, darkMode);
         if (cachedDataUrl) {
-            addOSMTileToCanvas(cachedDataUrl, tileX, tileY, zoom);
+            addOSMTileToCanvas(cachedDataUrl, tileX, tileY, zoom, darkMode, generation, done);
             return;
         }
-        
-        fabric.Image.fromURL(url, function(img) {
-            if (!img.getElement()) return;
-            
+
+        fabric.Image.fromURL(url, function(img, isError) {
+            if (isError || !img.getElement()) {
+                done();
+                return;
+            }
             // Convert to data URL for caching
-            const canvas_temp = document.createElement('canvas');
-            canvas_temp.width = img.width;
-            canvas_temp.height = img.height;
-            const ctx = canvas_temp.getContext('2d');
-            ctx.drawImage(img.getElement(), 0, 0);
-            const dataUrl = canvas_temp.toDataURL('image/png');
-            
-            storeOSMTileInCache(tileX, tileY, zoom, state.osmDarkMode, dataUrl);
-            addOSMTileToCanvas(dataUrl, tileX, tileY, zoom);
+            const canvasTemp = document.createElement('canvas');
+            canvasTemp.width = img.width;
+            canvasTemp.height = img.height;
+            canvasTemp.getContext('2d').drawImage(img.getElement(), 0, 0);
+            const dataUrl = canvasTemp.toDataURL('image/png');
+
+            storeOSMTileInCache(tileX, tileY, zoom, darkMode, dataUrl);
+            addOSMTileToCanvas(dataUrl, tileX, tileY, zoom, darkMode, generation, done);
         }, { crossOrigin: 'anonymous' });
     }
-    
-    function addOSMTileToCanvas(dataUrl, tileX, tileY, zoom) {
+
+    function addOSMTileToCanvas(dataUrl, tileX, tileY, zoom, darkMode, generation, done) {
         const canvas = state.canvas;
         const bounds = tileToBounds(tileX, tileY, zoom);
-        
+
         // Convert corners to pixel coordinates
         const topLeft = assetMeterToPixel(bounds.lonMin, bounds.latMax);
         const topRight = assetMeterToPixel(bounds.lonMax, bounds.latMax);
         const bottomLeft = assetMeterToPixel(bounds.lonMin, bounds.latMin);
         const bottomRight = assetMeterToPixel(bounds.lonMax, bounds.latMin);
-        
+
         const centerX = (topLeft.x + topRight.x + bottomLeft.x + bottomRight.x) / 4;
         const centerY = (topLeft.y + topRight.y + bottomLeft.y + bottomRight.y) / 4;
-        
-        const width = Math.sqrt(Math.pow(topRight.x - topLeft.x, 2) + Math.pow(topRight.y - topLeft.y, 2));
-        const height = Math.sqrt(Math.pow(bottomLeft.x - topLeft.x, 2) + Math.pow(bottomLeft.y - topLeft.y, 2));
-        
+
+        const width = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+        const height = Math.hypot(bottomLeft.x - topLeft.x, bottomLeft.y - topLeft.y);
         const angle = Math.atan2(topRight.y - topLeft.y, topRight.x - topLeft.x) * 180 / Math.PI;
-        
-        fabric.Image.fromURL(dataUrl, function(img) {
-            if (!img.getElement()) return;
-            
+
+        fabric.Image.fromURL(dataUrl, function(img, isError) {
+            done();
+            if (isError || !img.getElement() || !tileStillWanted(generation, zoom, darkMode)) return;
+            const tileKey = `${tileX}_${tileY}_${zoom}`;
+            if (state.osmLoadedTiles.has(tileKey)) return;
+
             img.set({
                 left: centerX,
                 top: centerY,
@@ -378,51 +385,36 @@
                 selectable: false,
                 evented: false,
                 isOSMTile: true,
-                osmDarkMode: state.osmDarkMode,
+                osmDarkMode: darkMode,
                 tileInfo: { x: tileX, y: tileY, zoom: zoom }
             });
-            
-            canvas.add(img);
+
+            // The basemap is always the bottom layer. Inserting it there
+            // directly replaces re-sorting the whole canvas for every tile.
+            canvas.insertAt(img, 0);
             state.osmTiles.push(img);
-            
-            const tileKey = `${tileX}_${tileY}_${zoom}`;
-            state.osmLoadedTiles.set(tileKey, { 
-                tile: img, 
-                zoom: zoom, 
-                darkMode: state.osmDarkMode 
-            });
-            
-            applyOSMZIndex();
-            
-            if (typeof bringMeasurementsToFront === 'function') {
-                bringMeasurementsToFront();
-            }
-            
-            canvas.renderAll();
+            state.osmLoadedTiles.set(tileKey, { tile: img, zoom: zoom, darkMode: darkMode });
+            canvas.requestRenderAll();
         }, { crossOrigin: 'anonymous' });
     }
-    
-    function applyOSMZIndex() {
-        const canvas = state.canvas;
-        state.osmTiles.forEach(tile => {
-            if (state.osmZIndex === 0) {
-                tile.sendToBack();
-            } else if (state.osmZIndex === 1) {
-                const sheets = canvas.getObjects().filter(obj => obj.isSheetImage);
-                sheets.forEach(sheet => tile.moveTo(canvas.getObjects().indexOf(sheet) + 1));
-            } else {
-                tile.bringToFront();
-            }
-        });
-    }
-    
+
     function clearOSMLayer() {
         const canvas = state.canvas;
+        osmGeneration++;
         state.osmTiles.forEach(tile => canvas.remove(tile));
         state.osmTiles = [];
         state.osmLoadedTiles.clear();
+        state.osmPendingTiles.clear();
+        state.osmCurrentZoom = null;
     }
     
+    /** Re-place the map after the overlay transform changed (scale, reference, rotation, unit). */
+    function refreshOSMPlacement() {
+        if (!state.osmEnabled) return;
+        clearOSMLayer();
+        renderOSMLayer();
+    }
+
     function debouncedRefreshOSM() {
         if (!state.osmEnabled) return;
         
@@ -446,11 +438,16 @@
         }
         
         if (state.osmEnabled) {
+            if (!['degrees', 'gda94_geo'].includes(PROJECT_DATA.coord_unit)) {
+                DW.showToast('The map needs latitude/longitude coordinates (Verify Assets > coordinate system)', 'warning', 5000);
+            } else if (!state.refAssetId) {
+                DW.showToast('Place a reference asset first (Verify Assets), so the map can be positioned', 'warning', 5000);
+            }
             renderOSMLayer();
         } else {
             clearOSMLayer();
         }
-        state.canvas.renderAll();
+        state.canvas.requestRenderAll();
         
         const btn = document.getElementById('osm-toggle-btn');
         if (btn) {
@@ -461,24 +458,19 @@
         saveOSMSettings();
     }
     
+    let osmSaveTimeout = null;
+
     function updateOSMOpacity(opacity) {
         state.osmOpacity = parseFloat(opacity);
         window.osmOpacity = state.osmOpacity;
-        
+
         state.osmTiles.forEach(tile => tile.set('opacity', state.osmOpacity));
-        state.canvas.renderAll();
-        saveOSMSettings();
+        state.canvas.requestRenderAll();
+        // The slider fires on every step; save once it settles.
+        clearTimeout(osmSaveTimeout);
+        osmSaveTimeout = setTimeout(saveOSMSettings, 400);
     }
-    
-    function updateOSMZIndex(zIndex) {
-        state.osmZIndex = parseInt(zIndex);
-        window.osmZIndex = state.osmZIndex;
-        
-        applyOSMZIndex();
-        state.canvas.renderAll();
-        saveOSMSettings();
-    }
-    
+
     async function saveOSMSettings() {
         try {
             const response = await fetch(`/api/projects/${PROJECT_ID}/calibrate/`, {
@@ -489,22 +481,19 @@
                 },
                 body: JSON.stringify({
                     osm_enabled: state.osmEnabled,
-                    osm_opacity: state.osmOpacity,
-                    osm_z_index: state.osmZIndex
+                    osm_opacity: state.osmOpacity
                 })
             });
-
-            if (response.ok) {
-                const result = await response.json();
-                PROJECT_DATA.osm_enabled = result.osm_enabled;
-                PROJECT_DATA.osm_opacity = result.osm_opacity;
-                PROJECT_DATA.osm_z_index = result.osm_z_index;
-            }
+            if (!response.ok) throw new Error(await DW.responseError(response));
+            const result = await response.json();
+            PROJECT_DATA.osm_enabled = result.osm_enabled;
+            PROJECT_DATA.osm_opacity = result.osm_opacity;
         } catch (error) {
             console.error('Error saving OSM settings:', error);
+            DW.showToast('Could not save the map settings: ' + error.message, 'error');
         }
     }
-    
+
     // ==================== Public API ====================
     
     DW.osm = {
@@ -518,11 +507,10 @@
         renderOSMLayer,
         renderOSMLayerAtZoom,
         clearOSMLayer,
+        refreshOSMPlacement,
         debouncedRefreshOSM,
         toggleOSMLayer,
         updateOSMOpacity,
-        updateOSMZIndex,
-        applyOSMZIndex,
         saveOSMSettings
     };
     
@@ -537,12 +525,10 @@
     window.renderOSMLayer = renderOSMLayer;
     window.renderOSMLayerAtZoom = renderOSMLayerAtZoom;
     window.clearOSMLayer = clearOSMLayer;
+    window.refreshOSMPlacement = refreshOSMPlacement;
     window.debouncedRefreshOSM = debouncedRefreshOSM;
     window.toggleOSMLayer = toggleOSMLayer;
     window.updateOSMOpacity = updateOSMOpacity;
-    window.updateOSMZIndex = updateOSMZIndex;
-    window.applyOSMZIndex = applyOSMZIndex;
     window.saveOSMSettings = saveOSMSettings;
     
-    console.log('DocuWeaver OSM module loaded');
 })();

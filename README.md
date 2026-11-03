@@ -10,7 +10,7 @@ Licensed under the [GNU AGPL v3 or later](LICENSE).
 - **PDF layer (OCG) control.** Toggle the optional content layers embedded in CAD-exported PDFs.
 - **Interactive canvas editor.** Pan, zoom, rotate, crop, cut and align sheets on a Fabric.js canvas, with undo.
 - **CSV asset and link import.** Flexible column mapping, saved column presets, batch management, and polyline links between assets.
-- **Coordinate systems.** Metres, WGS84 latitude/longitude, GDA94 geographic and GDA94 MGA.
+- **Coordinate systems.** Metres, WGS84 latitude/longitude, GDA94 geographic and GDA94 MGA. X is easting or longitude and Y is northing or latitude, increasing to the north.
 - **Calibration.** Two-point scale calibration and reference-point anchoring so imported coordinates land in the right spot.
 - **Measurement tool.** Distances and areas with named measurement sets.
 - **Layer groups.** Organise sheets, assets and links into nested folders with per-group visibility.
@@ -83,7 +83,8 @@ All settings are environment variables and can be placed in `.env`. See [`.env.e
 | `DOCUWEAVER_REQUIRE_LOGIN` | `true` | Require sign-in for every page and API call. Set to `false` for a single-user install on a trusted machine. |
 | `DOCUWEAVER_DATA_DIR` | project folder | Where the SQLite database and uploads are stored. |
 | `DOCUWEAVER_HTTPS` | `false` | Turn on secure cookies, HTTPS redirect and HSTS. Only when served over TLS. |
-| `DOCUWEAVER_MAX_UPLOAD_MB` | `10` | Largest accepted upload. |
+| `DOCUWEAVER_MAX_UPLOAD_MB` | `50` | Largest PDF that can be uploaded. |
+| `DOCUWEAVER_MAX_IMPORT_MB` | `2048` | Largest size an imported project file may unpack to. |
 | `DOCUWEAVER_HOST` / `DOCUWEAVER_PORT` | `127.0.0.1` / `8000` | Bind address for `manage.py serve`. |
 | `DJANGO_TIME_ZONE` | `UTC` | Timezone for displayed timestamps. |
 
@@ -98,11 +99,11 @@ DocuWeaver works fully offline except for the optional OpenStreetMap basemap, wh
 ## Usage overview
 
 1. **Create a project** from the Projects page, then open the editor.
-2. **Upload a PDF.** Each page becomes a sheet. Drag, rotate, crop and cut sheets until they line up.
+2. **Upload a PDF.** Each page becomes a sheet. Drag, rotate, crop and cut sheets until they line up. (A password-protected PDF has to be saved without its password first.)
 3. **Calibrate.** Use the scale tool on a known dimension, then anchor a reference point with a known coordinate.
-4. **Import assets** from CSV, mapping your columns to asset ID, type, X/Y (or lat/lon) and optional metadata. Save the mapping as a preset for next time.
-5. **Verify and adjust.** Drag any asset to its true position; adjustments are logged and can be exported as a report.
-6. **Export** composed sheets as PDF, or export the whole project (`.docuweaver` file) to move it to another machine.
+4. **Import assets** from CSV, mapping your columns to asset ID, type, X/Y (or lat/lon) and optional metadata. Save the mapping as a preset for next time. Importing a file again updates assets with the same ID, but they stay in the import (and folder) that first created them, so deleting the later import only removes the assets it added. Then use **Verify & Plot**: pick a reference asset and click where it is on the drawing.
+5. **Adjust.** With the Select tool, drag any asset to its true position; adjustments are logged and can be exported as a report. (Other tools leave the markers alone, so panning across them is safe.)
+6. **Export.** In the editor's Export section, *Drawings with Assets (PDF)* downloads one PDF with a page per visible sheet and the visible assets drawn where the editor shows them (cuts, PDF layer choices, links and measurements aren't included yet), and *Adjustment Report* downloads the logged adjustments as CSV. To move a project to another machine, export the whole project (`.docuweaver` file, including folders, PDF layer choices and the adjustment history) from the Projects page.
 
 ## Backing up
 

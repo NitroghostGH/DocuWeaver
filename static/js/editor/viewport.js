@@ -217,82 +217,58 @@
         canvas.requestRenderAll();
     }
 
+    /**
+     * Zoom and pan so every visible sheet fits the part of the canvas not
+     * covered by the floating toolbar, at the current view rotation.
+     */
     function zoomFit() {
         const canvas = state.canvas;
-        const objects = canvas.getObjects().filter(obj => obj.sheetData);
-        
+        const objects = canvas.getObjects().filter(obj => obj.sheetData && obj.visible);
         if (objects.length === 0) return;
-        
+
+        const rad = state.viewportRotation * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+
+        // Extents of the sheet corners in the rotated view, at zoom 1
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        
         objects.forEach(obj => {
-            const bounds = obj.getBoundingRect(true, true);
-            minX = Math.min(minX, bounds.left);
-            minY = Math.min(minY, bounds.top);
-            maxX = Math.max(maxX, bounds.left + bounds.width);
-            maxY = Math.max(maxY, bounds.top + bounds.height);
+            obj.setCoords();
+            Object.values(obj.aCoords).forEach(p => {
+                const x = p.x * cos - p.y * sin;
+                const y = p.x * sin + p.y * cos;
+                minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+            });
         });
-        
         const contentWidth = maxX - minX;
         const contentHeight = maxY - minY;
-        
         if (contentWidth < 1 || contentHeight < 1) return;
-        
-        const zoomX = canvas.width / contentWidth * 0.9;
-        const zoomY = canvas.height / contentHeight * 0.9;
-        const zoom = Math.min(zoomX, zoomY, 1);
-        
-        setZoomPreservingRotation(zoom);
-        canvas.absolutePan({
-            x: minX * zoom - (canvas.width - contentWidth * zoom) / 2,
-            y: minY * zoom - (canvas.height - contentHeight * zoom) / 2
-        });
-        applyViewportRotation();
-        updateZoomDisplay();
-    }
-    
-    function bringToScale() {
-        const canvas = state.canvas;
-        const objects = canvas.getObjects().filter(obj => obj.sheetData);
-        
-        if (objects.length === 0) {
-            DW.showToast('No sheets to fit', 'warning');
-            return;
-        }
-        
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        
-        objects.forEach(obj => {
-            const bounds = obj.getBoundingRect(true, true);
-            minX = Math.min(minX, bounds.left);
-            minY = Math.min(minY, bounds.top);
-            maxX = Math.max(maxX, bounds.left + bounds.width);
-            maxY = Math.max(maxY, bounds.top + bounds.height);
-        });
-        
-        const contentWidth = maxX - minX;
-        const contentHeight = maxY - minY;
-        
-        if (contentWidth < 1 || contentHeight < 1) return;
-        
-        const zoomX = canvas.width / contentWidth * 0.85;
-        const zoomY = canvas.height / contentHeight * 0.85;
-        let zoom = Math.min(zoomX, zoomY, 2);
-        
-        setZoomPreservingRotation(zoom);
-        
-        canvas.absolutePan({
-            x: minX * zoom - (canvas.width - contentWidth * zoom) / 2,
-            y: minY * zoom - (canvas.height - contentHeight * zoom) / 2
-        });
-        
-        applyViewportRotation();
+
+        // Leave out the strip the floating toolbar covers on the left.
+        const toolbar = document.getElementById('floating-toolbar');
+        const leftInset = toolbar && toolbar.offsetParent ? toolbar.offsetLeft + toolbar.offsetWidth + 8 : 0;
+        const availWidth = Math.max(canvas.width - leftInset, canvas.width * 0.5);
+        const zoom = Math.min(availWidth / contentWidth * 0.95, canvas.height / contentHeight * 0.95, 1);
+
+        // Put the content centre at the centre of the free area.
+        const cx = (minX + maxX) / 2;   // in rotated, unzoomed coordinates
+        const cy = (minY + maxY) / 2;
+        state.currentZoomLevel = zoom;
+        window.currentZoomLevel = zoom;
+        const vpt = canvas.viewportTransform;
+        vpt[0] = cos * zoom; vpt[1] = sin * zoom;
+        vpt[2] = -sin * zoom; vpt[3] = cos * zoom;
+        vpt[4] = leftInset + availWidth / 2 - cx * zoom;
+        vpt[5] = canvas.height / 2 - cy * zoom;
+        canvas.setViewportTransform(vpt);
+        canvas.requestRenderAll();
+
         updateZoomDisplay();
         debouncedSaveViewportState();
-        
-        console.log('Brought to scale: zoom =', zoom.toFixed(2));
+        if (typeof debouncedRefreshOSM === 'function') debouncedRefreshOSM();
     }
-    
+
     function resetView() {
         setZoomPreservingRotation(1);
         state.canvas.absolutePan({ x: 0, y: 0 });
@@ -308,6 +284,7 @@
         
         if (zoomLevel) zoomLevel.textContent = zoom;
         if (zoomDisplay) zoomDisplay.textContent = zoom + '%';
+        if (typeof updateMarkerScale === 'function') updateMarkerScale();
     }
     
     // ==================== Rotation Functions ====================
@@ -340,7 +317,6 @@
             return;
         }
         setViewportRotation(-state.selectedSheet.rotation);
-        console.log('View rotated to match sheet:', state.selectedSheet.name);
     }
     
     /**
@@ -427,51 +403,42 @@
             timestamp: Date.now()
         };
         
-        const key = `docuweaver-viewport-${PROJECT_ID}`;
-        localStorage.setItem(key, JSON.stringify(viewState));
+        DW.storage.set(`docuweaver-viewport-${PROJECT_ID}`, viewState);
     }
     
     function restoreViewportState() {
         const canvas = state.canvas;
         if (!canvas || typeof PROJECT_ID === 'undefined') return false;
         
-        const key = `docuweaver-viewport-${PROJECT_ID}`;
-        const saved = localStorage.getItem(key);
-        
-        if (saved) {
-            try {
-                const viewState = JSON.parse(saved);
-                
-                // Restore zoom
-                state.currentZoomLevel = viewState.zoom || 1;
-                window.currentZoomLevel = state.currentZoomLevel;
-                
-                // Restore rotation
-                state.viewportRotation = viewState.rotation || 0;
-                window.viewportRotation = state.viewportRotation;
-                
-                // Apply rotation first
+        const viewState = DW.storage.get(`docuweaver-viewport-${PROJECT_ID}`, null);
+        if (!viewState) {
+            // First visit in this browser: the view rotation saved with the project
+            const rotation = (typeof PROJECT_DATA !== 'undefined' && Number(PROJECT_DATA.canvas_rotation)) || 0;
+            if (rotation) {
+                state.viewportRotation = rotation;
+                window.viewportRotation = rotation;
                 applyViewportRotation();
-                
-                // Apply pan
-                const vpt = canvas.viewportTransform;
-                vpt[4] = viewState.panX || 0;
-                vpt[5] = viewState.panY || 0;
-                canvas.setViewportTransform(vpt);
-                
-                updateZoomDisplay();
                 updateRotationDisplay();
-                
-                console.log('Viewport restored:', viewState);
-                return true;
-            } catch (e) {
-                console.error('Error restoring viewport:', e);
             }
+            return false;
         }
-        
-        return false;
+        state.currentZoomLevel = Number(viewState.zoom) || 1;
+        window.currentZoomLevel = state.currentZoomLevel;
+        state.viewportRotation = Number(viewState.rotation) || 0;
+        window.viewportRotation = state.viewportRotation;
+
+        // Rotation first: it rebuilds the matrix from zoom and rotation
+        applyViewportRotation();
+        const vpt = canvas.viewportTransform;
+        vpt[4] = Number(viewState.panX) || 0;
+        vpt[5] = Number(viewState.panY) || 0;
+        canvas.setViewportTransform(vpt);
+
+        updateZoomDisplay();
+        updateRotationDisplay();
+        return true;
     }
-    
+
     function debouncedSaveViewportState() {
         if (viewportSaveTimeout) clearTimeout(viewportSaveTimeout);
         viewportSaveTimeout = setTimeout(saveViewportState, 300);
@@ -507,7 +474,9 @@
 
         if (typeof pixelToAssetMeter === 'function') {
             const pos = pixelToAssetMeter(pointer.x, pointer.y);
-            cursorEl.textContent = `${pos.x.toFixed(2)}m, ${pos.y.toFixed(2)}m`;
+            cursorEl.textContent = typeof formatCoordPair === 'function'
+                ? formatCoordPair(pos.x, pos.y)
+                : `${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}`;
         }
     }
     
@@ -519,7 +488,6 @@
         zoomToPoint,
         zoomToScreenPoint,
         zoomFit,
-        bringToScale,
         resetView,
         setZoomPreservingRotation,
         updateZoomDisplay,
@@ -542,7 +510,6 @@
     window.zoomToPoint = zoomToPoint;
     window.zoomToScreenPoint = zoomToScreenPoint;
     window.zoomFit = zoomFit;
-    window.bringToScale = bringToScale;
     window.resetView = resetView;
     window.setZoomPreservingRotation = setZoomPreservingRotation;
     window.updateZoomDisplay = updateZoomDisplay;
@@ -561,5 +528,4 @@
     // Save before unload
     window.addEventListener('beforeunload', saveViewportState);
     
-    console.log('DocuWeaver viewport module loaded');
 })();

@@ -5,7 +5,7 @@ together, known defects, and design decisions that aren't obvious from the
 source. Installation and usage are in `README.md`; the current project state
 and next steps are in `STATUS.md`.
 
-_Last reviewed: 2026-11-01_
+_Last reviewed: 2026-11-02_
 
 ---
 
@@ -21,7 +21,7 @@ source of truth**:
 4. `static/js/editor/namespace.js`: creates `window.DocuWeaver` and the shared `DocuWeaver.state`, and patches Fabric's `textBaseline` bug. Must load first among the editor modules.
 5. Editor modules in `static/js/editor/`: `undo`, `viewport`, `tools`, `canvas_init`, `crop`, `split`, `calibration`, `assets`, `links`, `sheets`, `osm`, `measurements`, `layers` (folders/layer groups), `imports`, `sidebar`, then `main.js` (startup).
 6. `static/js/editor/verify.js`: a self-check that logs to the browser console (see below).
-7. An inline script that syncs dark mode with PDF inversion and OSM tiles.
+7. An inline script that re-applies the theme (canvas colour, sheet filter, OSM tiles) when dark mode is toggled.
 
 Conventions:
 
@@ -33,14 +33,18 @@ Conventions:
   you rename or move a function, grep for its name across `static/js` and
   `templates`.
 - `verify.js` checks that the expected modules, `window.*` functions and
-  `state` keys exist, and prints a pass/fail summary in the DevTools console
-  on every editor page load. It is the quickest way to spot a dropped
-  function, and it should report no failures. When you add a function that
-  another module or `editor.html` calls, add it to `verify.js` too.
-- The load-order comment at the top of `namespace.js` is out of date (it lists
-  a `modals.js` that doesn't exist). Trust `editor.html`.
-- `static/js/canvas_core.js` isn't loaded by any template. It's a leftover
-  from before the module split and can be deleted.
+  `state` keys exist once the page has loaded, and prints one
+  "DocuWeaver self-check" line in the DevTools console (an error line if
+  anything is missing). Add `?verify=1` to the editor URL for every check.
+  It is the quickest way to spot a dropped function, and it should report no
+  failures. When you add a function that another module or `editor.html`
+  calls, add it to `verify.js` too.
+- Use `console.error`/`console.warn` for problems only; routine
+  `console.log` calls were removed. Tell the user with `DW.showToast`.
+- Shared helpers in `namespace.js`: `DW.storage.get/set` (localStorage
+  that never throws, for private windows), `DW.naturalCompare` (V2 before
+  V10) and `DW.responseError(response)` (one readable message from any DRF
+  error body).
 
 ### History: the canvas_editor.js split (finished)
 
@@ -90,15 +94,238 @@ scratch database, not checked in). It drove each action above and checked
 the network requests and the database. All 15 checks failed on the old code
 and passed after the fix.
 
-### Remaining tech debt
+### Duplicate handlers (resolved 2026-11-03)
 
-`tools.js` still has its own copies of the crop, calibrate, origin, verify and
-measure click handlers, and canvas events go to those (`DW.tools.*`). The
-same-named functions in `crop.js`, `calibration.js` and `measurements.js` are
-exported on `window` but the canvas never calls them. The copies currently
-behave the same (crop saves through `applyCutMask` → `saveCutData`;
-calibrate, origin and verify save through the same endpoints). Pick one copy
-of each and delete the other before they drift apart.
+`tools.js` used to keep its own copies of the crop, calibrate, origin and
+verify click handlers, and the canvas called those while the copies in
+`crop.js` and `calibration.js` went unused. The copies were deleted;
+`canvas_init.js` now sends each tool's events to its own module
+(`DW.crop.*`, `DW.split.*`, `DW.calibration.*`). `tools.js` keeps only
+`setMode` and the select and measure clicks.
+
+---
+
+## Fixed 2026-11-02: default-install failures (review batch 1)
+
+A browser review on 2026-11-01 (DEBUG off, sign-in on, real PDFs; report
+linked from `STATUS.md`) found everyday actions failing that the test suite
+couldn't see, because the tests skip CSRF checks, mock PDF rendering and
+have no browser. Points worth knowing when touching this code:
+
+- **CSRF in page scripts.** `fetch()` calls outside the editor take the token
+  from a `{% csrf_token %}` inside their form and send it as `X-CSRFToken`.
+  The editor uses `DocuWeaver.getCSRFToken()` (cookie). DRF only enforces
+  CSRF for session-authenticated requests, so with `REQUIRE_LOGIN=false` a
+  missing token goes unnoticed. Test with sign-in on.
+- **PDF layers** (`render_pdf_page`, `set_sheet_layers`). `visible_layers`
+  holds OCG xrefs: `[]` means every layer is on; otherwise exactly the listed
+  xrefs are on, and the editor sends `[0]` (never a valid xref) for "all
+  off". PyMuPDF's `set_layer()` must be given xrefs, not names, and MuPDF
+  only applies it after the document is reopened, so the renderer reopens
+  from `doc.tobytes()`. The endpoint saves `visible_layers` only after the
+  render succeeds.
+- **`?format=` is reserved by DRF** for choosing a renderer, and DRF answers
+  404 for a format it has no renderer for. The adjustment report uses
+  `?output=csv`.
+- **Large uploads.** Files above `FILE_UPLOAD_MAX_MEMORY_SIZE` are spooled to a
+  temp file, which `request.data.copy()` can't deep-copy. Use
+  `request.data.dict()`.
+- **Link CSV import** takes the file as `file` (what the editor sends, same as
+  the asset import); `csv_file` is still accepted.
+- **Re-rendering the canvas.** `loadProjectData()` runs again after imports and
+  folder moves, so every `render*OnCanvas` function must remove its old
+  objects first. Assets didn't, and doubled on each call.
+- **Missing markup fails only in the browser.** `EditorMarkupTests` in
+  `drawings/tests.py` checks the dialog ids the editor scripts look up; add
+  new ones there.
+
+Still open from the review: see `STATUS.md`, "In flight / next steps".
+
+---
+
+## Asset coordinates and markers (since 2026-11-02, review batch 2)
+
+How asset coordinates become canvas pixels, all in `static/js/editor/assets.js`.
+Links and the OSM basemap go through the same two functions
+(`assetMeterToPixel`, `pixelToAssetMeter`), so they stay consistent.
+
+- **Axes.** In every coordinate unit, x is easting or longitude and y is
+  northing or latitude, increasing to the north. Canvas y increases
+  downwards, so `coordOffsetToMeters` returns canvas-oriented metres
+  (x east, y south). Before 2026-11-02 only degree units were flipped, so
+  Meters and MGA projects plotted mirrored north–south.
+- **Degrees to metres.** `metresPerDegree(lat)` gives separate WGS84 values
+  for latitude and longitude at the reference asset's latitude (within
+  0.5 ppm of the exact ellipsoid formulas). One 111,320 m/deg for both axes
+  was 0.46% long north–south at 27.5° S. The equirectangular approximation
+  about one latitude is fine at drawing-set scale (km).
+- **Anchor.** The overlay is a single fixed transform: the reference asset's
+  *original* (imported) coordinates sit at `(ref_pixel_x, ref_pixel_y)`,
+  rotated by `asset_rotation` and scaled by `pixels_per_meter`. It must not
+  depend on anything the user can adjust, or adjusting the reference asset
+  drags every other asset along. When the Verify click lands on an asset that
+  is already adjusted, `referencePixelForClick` stores the pixel of its
+  original coordinates instead of the click.
+- **Marker origin.** A marker is a `fabric.Group` of symbol and label. Its
+  origin is set (fractional `originX/originY`, see `makeAssetGroup`) to the
+  symbol centre, so `group.left/top` *is* the asset's pixel position for
+  drawing, dragging and saving. With the default top-left origin the symbol
+  was drawn half its size down and right of the point, and dragged positions
+  were saved with the same error.
+- **Interaction.** Markers are `selectable`/`evented` only in Select mode
+  (`setMode` in `tools.js`, and `makeAssetGroup` for markers created later).
+  In other modes a drag that starts on a marker pans, and measure clicks go
+  through to the canvas.
+- **Sheet positions.** The editor draws sheets exactly at their saved offset.
+  New sheets get a cascaded offset (50 px per existing sheet) when uploaded
+  (`cascade_offset` in `api_views.py`); migration `0014` saved the offset the
+  editor used to fake for sheets at (0, 0). Project files carry
+  `"sheet_offsets": "saved"`; importing a file without it (exported before
+  1.0.2) applies the same rule (`apply_legacy_sheet_cascade` in
+  `drawings/services/project_archive.py`). Note `0014` also exists on the
+  upstream `feature/join-mark-detection` branch; merging that branch needs a
+  merge migration.
+- **Known-answer check.** The 2026-11-02 verification used a synthetic 1:500
+  drawing with 18 valves whose WGS84 and MGA coordinates were computed from
+  the drawing: every marker landed within 1 mm. There's no automated JS test
+  for this yet (see `STATUS.md`).
+
+---
+
+## Project data rules (since 2026-11-02, review batch 3)
+
+- **Saving.** Never call a plain `save()` on a row loaded at the start of a
+  request: it writes back every column, undoing anything another request
+  changed meanwhile. Use `save_fields(obj, [...])` from `drawings/models.py`
+  (adds the `auto_now` timestamp). The DRF serializers get the same through
+  `SaveChangedFieldsMixin` in `serializers.py`, which also rejects a related
+  object (folder, batch) from another project.
+- **Import batches.** An asset or link belongs to the import that created it.
+  A later import that repeats its ID updates the values but not
+  `import_batch` or `layer_group` (`csv_importer.py`), so deleting a batch
+  only deletes what it added. Deleting a batch also deletes the folder the
+  import created if nothing else is in it. The batch count shown in the
+  sidebar is counted live (`ImportBatchSerializer.asset_count`); the stored
+  `ImportBatch.asset_count` is what the import created.
+- **CSV rows.** Each row is imported in its own savepoint. A row that fails
+  must not leave anything cached from inside its savepoint (the asset type
+  cache is cleaned up for that reason). Coordinates go through
+  `parse_finite_float`; `json` and `float()` both accept `nan`/`inf`, and
+  one stored `inf` makes the asset list fail to serialise.
+- **Folders.** `parent_creates_cycle` in `models.py` is the one cycle check,
+  used by the folder PATCH, `join_groups` and project import.
+- **Project files.** `drawings/services/project_archive.py` builds and reads
+  both archive formats. Records are copied from the model fields
+  (`_plain_fields`), so a new plain field is exported and imported without
+  changes there; a new relation or file field needs adding by hand.
+  References use the exporting database's ids; `*_name` fields are still
+  written for older versions and used for files that predate ids. Imported
+  files are checked by content (`_stored_name`), stored once each, and
+  removed again if the import fails.
+
+## Uploads and requests (since 2026-11-02, review batch 4)
+
+- **PDF uploads are all or nothing.** `SheetListCreate.create` calls
+  `render_upload` (`drawings/services/pdf_processor.py`), which opens the
+  upload, refuses it with `PdfError` (password-protected, unreadable, no
+  pages, a page over `MAX_RENDER_PIXELS`) and renders every page to a stored
+  PNG. Only then are the PDF stored and the rows created, in one short
+  transaction; any failure deletes the files again. Keep slow work like
+  rendering out of transactions: SQLite allows one writer, and a held write
+  lock stalls every other user's saves. `split_sheet` still renders one page
+  inside its transaction.
+- **`PdfError` is the user's problem, anything else is ours.** Views turn
+  `PdfError` into a 400 with its message, which the editor shows as is.
+  Other exceptions stay 500s and get logged.
+- **Render size.** Sheets are rendered at `RENDER_DPI` (150; the export maps
+  overlay positions back with it). A render needs about 7 bytes per pixel,
+  so `MAX_RENDER_PIXELS` (100 Mpx, about 2.9 m² of paper) caps one render
+  near 700 MB. Rendering goes straight from the pixmap to PNG with
+  `pix.tobytes('png')`; going through Pillow took 45% more memory.
+- **CSRF without login.** DRF checks CSRF only for signed-in session users.
+  `drawings.auth.CsrfCheckWithoutLogin` must stay last in
+  `DEFAULT_AUTHENTICATION_CLASSES`: it checks the token on requests that no
+  earlier class signed in, which matters when `DOCUWEAVER_REQUIRE_LOGIN` is
+  false. Basic-auth clients are signed in before it runs. Every fetch that
+  changes data must send `X-CSRFToken` (the pages set the `csrftoken`
+  cookie with `{% csrf_token %}`).
+- **Upload limits.** `DOCUWEAVER_MAX_UPLOAD_MB` is read by
+  `PDFFileValidator` when a file is checked (the model field passes no
+  size, so changing the setting needs no migration). Non-file request
+  bodies are capped at 10 MB, and uploads over 2.5 MB are spooled to a
+  temporary file, which `open_pdf` opens by path.
+- **python-magic is optional.** `detected_mime` returns None when it's
+  missing or fails; the header checks in `validators.py` always run.
+
+---
+
+## Display and editing (since 2026-11-03, review batch 5)
+
+- **Visibility has one rule, applied in one place.** An item is shown when
+  its own `visible` flag is true, every folder above it is shown, its
+  section (Sheets/Assets/Links/Measurements) isn't hidden, and its import
+  batch isn't hidden. `applyVisibility()` in `layers.js` sets `obj.visible`
+  for every canvas object from that rule (`isItemShown` / `isFolderShown`);
+  renderers draw everything and only set the flag. Item and folder flags
+  are saved on the server (`visible` on Sheet, Asset, Link, MeasurementSet
+  and LayerGroup), so everyone sees the same. Section and batch eyes are per
+  browser (`DW.storage`, keyed by project), because they're a viewing choice.
+  `loadLayerGroups()` fetches every folder type in one request and indexes
+  nested folders into `state.folderById`.
+- **Stacking order is computed, not accumulated.** `applyRenderingHierarchy()`
+  in `main.js` rebuilds `canvas._objects` in place: OSM tiles at the bottom,
+  then sheets by (Z-index, position in `state.sheets`), then the other layer
+  types. Every renderer calls it after adding objects, so image load order
+  and earlier inserts don't matter. Z-index only orders sheets among
+  themselves. OSM tiles use `canvas.insertAt(img, 0)` and skip the full sort.
+- **Dark mode** is one ColorMatrix on each sheet (`setSheetInversion` in
+  `main.js`): invert, then a 180° hue rotation, folded into
+  `rgb' = 1 − H·rgb`. Blue stays blue and black becomes white. Fabric's 2D
+  filter backend multiplies the matrix offsets by 255. Labels take their
+  colour from `assetLabelStyle()` and are redrawn when the theme changes.
+- **Markers keep their screen size when zoomed out**: `markerScale()` is
+  1/zoom below 100% and 1 above, applied once per frame by
+  `updateMarkerScale()` on zoom. Moving markers after a calibration or
+  rotation change uses `repositionAssets()`, which keeps the same objects.
+- **Undo** (`undo.js`) records `transform`, `sheetProperty`, `cut`,
+  `clearCut` and `assetAdjust`. Anything that can't be undone, such as a
+  split, calls `clearUndoHistory(reason)`, so Ctrl+Z can't reach past it to
+  an older change. Ctrl+Z inside a text box is left to the browser.
+- **Coordinates are shown in the project's unit.** `coordAxisLabel()` and
+  `formatCoordPair()` in `assets.js` give Longitude/Latitude (°, 6
+  decimals), Easting/Northing (m) or X/Y (m). The report CSV uses 8 decimals
+  and `(deg)` for degree units.
+- **Composed PDF export** (`GET /api/projects/<id>/export/`,
+  `export_project_pdf` in `drawings/services/export_service.py`) draws onto
+  the original PDF pages. `MarkerLayout` is a Python port of
+  `assetMeterToPixel`; a marker's canvas position is mapped back through
+  the sheet's offset and rotation and the 150 DPI render scale.
+  `_PageSpace` works around PyMuPDF ignoring the crop box for shapes on
+  rotated, cropped pages. It doesn't yet apply PDF layer choices or cuts,
+  or draw links and measurements.
+- **Files are deleted with their rows**, after the transaction commits, by
+  the `post_delete` receiver `delete_sheet_files` in `drawings/models.py`
+  (cascades don't call `Sheet.delete()`). A PDF shared by several sheets is
+  kept until the last one goes.
+- **Folder lists cost a fixed number of queries**: `LayerGroupTree` in
+  `drawings/serializers.py` loads every folder and the per-type item counts
+  up front, and `LayerGroupSerializer` reads from it when it's in the
+  serializer context.
+- **CSV column matching**: `GET /api/column-presets/` returns names per
+  role, highest priority first (seeded by migration 0018, editable in the
+  admin). The import dialog compares names ignoring case, spaces, `_` and
+  `-`, prefers a mapping remembered for the project, and leaves unmatched
+  fields at "-- Select --".
+- **Narrow screens**: below 1600 px the properties panel starts closed and
+  `openRightSidebar()` opens it on selection; below 1440 px both sidebars
+  are 250 px. The canvas is sized after the startup collapse, so the
+  collapse skips its slide animation.
+
+Verified 2026-11-03 with a Playwright script (headless Chromium, sign-in on,
+`DJANGO_DEBUG=false`, scratch database, not checked in): 47 checks covering
+each item above, including hue and label colours in dark mode, stacking
+across three reloads, saved eyes and folders, undo, measurements, the scale
+tool, unit labels, Fit, the PDF download, 1280×720 and a 390 px phone.
 
 ---
 
@@ -109,7 +336,8 @@ two different moves:
 
 - **Move folder to…** (`showMoveGroupDialog`) moves the folder itself under
   another parent. Descendants of the folder are filtered out, because moving
-  a folder into its own child would create a cycle. The "root level" option
+  a folder into its own child would create a cycle (the server rejects it
+  too). The "root level" option
   only appears when the folder isn't already at the root. To put a parent
   inside what was its child, first move the child to the root, then move the
   parent into it.

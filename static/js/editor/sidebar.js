@@ -50,6 +50,12 @@
         setTimeout(resizeCanvasToFit, 220);
     }
 
+    /** Open the properties panel (on selection) if it is collapsed. */
+    function openRightSidebar() {
+        var sidebar = document.getElementById('sidebar-right');
+        if (sidebar && sidebar.classList.contains('collapsed')) toggleRightSidebar();
+    }
+
     function resizeCanvasToFit() {
         var container = document.getElementById('canvas-container');
         var canvas = state.canvas;
@@ -207,37 +213,23 @@
 
         var sections = container.querySelectorAll('.sortable-layer-section');
         var order = Array.from(sections).map(function(s) { return s.dataset.section; });
-
-        localStorage.setItem('docuweaver-layer-order-' + PROJECT_ID, JSON.stringify(order));
-        console.log('Layer section order saved:', order);
+        DW.storage.set('docuweaver-layer-order-' + PROJECT_ID, order);
     }
 
     function restoreLayerSectionOrder() {
         var container = document.getElementById('layers-container');
         if (!container) return;
 
-        var savedOrder = localStorage.getItem('docuweaver-layer-order-' + PROJECT_ID);
-        if (!savedOrder) return;
+        var order = DW.storage.get('docuweaver-layer-order-' + PROJECT_ID, null);
+        if (!Array.isArray(order)) return;
 
-        try {
-            var order = JSON.parse(savedOrder);
-            var sections = container.querySelectorAll('.sortable-layer-section');
-            var sectionMap = {};
-
-            sections.forEach(function(s) {
-                sectionMap[s.dataset.section] = s;
-            });
-
-            order.forEach(function(sectionName) {
-                if (sectionMap[sectionName]) {
-                    container.appendChild(sectionMap[sectionName]);
-                }
-            });
-
-            console.log('Layer section order restored:', order);
-        } catch (e) {
-            console.warn('Failed to restore layer section order:', e);
-        }
+        var sectionMap = {};
+        container.querySelectorAll('.sortable-layer-section').forEach(function(s) {
+            sectionMap[s.dataset.section] = s;
+        });
+        order.forEach(function(sectionName) {
+            if (sectionMap[sectionName]) container.appendChild(sectionMap[sectionName]);
+        });
     }
 
     function moveMeasurementSectionToTop() {
@@ -251,9 +243,23 @@
         }
     }
 
-    // Initialize layer sorting on DOM ready
+    // Initialize layer sorting on DOM ready. On screens narrower than
+    // 1600px the properties panel starts closed and opens when something is
+    // selected, so the canvas gets the room until then.
     document.addEventListener('DOMContentLoaded', function() {
         initLayerSectionSorting();
+        var sidebar = document.getElementById('sidebar-right');
+        if (sidebar && window.innerWidth < 1600 && !sidebar.classList.contains('collapsed')) {
+            // No slide animation here: the canvas sizes itself from the
+            // space left over as soon as the page loads.
+            sidebar.style.transition = 'none';
+            sidebar.classList.add('collapsed');
+            document.body.classList.add('right-sidebar-collapsed');
+            void sidebar.offsetWidth;
+            sidebar.style.transition = '';
+            var btn = document.querySelector('.right-toggle-btn');
+            if (btn) btn.innerHTML = '&laquo;';
+        }
     });
 
     // ==================== Public API ====================
@@ -262,6 +268,7 @@
         showTab: showTab,
         toggleLeftSidebar: toggleLeftSidebar,
         toggleRightSidebar: toggleRightSidebar,
+        openRightSidebar: openRightSidebar,
         resizeCanvasToFit: resizeCanvasToFit,
         toggleImportDropdown: toggleImportDropdown,
         closeImportDropdown: closeImportDropdown,
@@ -275,6 +282,7 @@
     window.showTab = showTab;
     window.toggleLeftSidebar = toggleLeftSidebar;
     window.toggleRightSidebar = toggleRightSidebar;
+    window.openRightSidebar = openRightSidebar;
     window.resizeCanvasToFit = resizeCanvasToFit;
     window.toggleImportDropdown = toggleImportDropdown;
     window.closeImportDropdown = closeImportDropdown;
@@ -283,5 +291,4 @@
     window.restoreLayerSectionOrder = restoreLayerSectionOrder;
     window.moveMeasurementSectionToTop = moveMeasurementSectionToTop;
 
-    console.log('DocuWeaver sidebar module loaded');
 })();

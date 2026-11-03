@@ -3,25 +3,38 @@
 {% block title %}Projects - DocuWeaver{% endblock %}
 
 {% block content %}
+<style>
+    .project-list-header { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .project-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+    .project-list-dialog { width: calc(100% - 2rem); max-width: 500px; margin: 100px auto; }
+    /* Phones: drop the description and date columns, let the rest wrap. */
+    @media (max-width: 700px) {
+        .project-table .col-optional { display: none; }
+        .project-table th, .project-table td { padding: 0.5rem 0.4rem; }
+        .project-table .btn { padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+        .project-list-dialog { margin: 1.5rem auto; padding: 1.25rem !important; }
+    }
+</style>
 <div class="container">
     <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <div class="project-list-header">
             <h2>Projects</h2>
-            <div style="display: flex; gap: 0.5rem;">
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                 <button class="btn" style="background: var(--btn-secondary);" onclick="showImportModal()">📥 Import Project</button>
                 <button class="btn btn-success" onclick="showCreateModal()">+ New Project</button>
             </div>
         </div>
 
         {% if projects %}
-        <table>
+        <div style="overflow-x: auto;">
+        <table class="project-table">
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th>Description</th>
+                    <th class="col-optional">Description</th>
                     <th>Sheets</th>
                     <th>Assets</th>
-                    <th>Created</th>
+                    <th class="col-optional">Created</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -29,19 +42,22 @@
                 {% for project in projects %}
                 <tr>
                     <td><strong>{{ project.name }}</strong></td>
-                    <td class="text-muted">{{ project.description|truncatechars:50 }}</td>
-                    <td><span class="badge badge-primary">{{ project.sheets.count }} sheets</span></td>
-                    <td><span class="badge badge-success">{{ project.assets.count }} assets</span></td>
-                    <td class="text-muted">{{ project.created_at|date:"M d, Y" }}</td>
+                    <td class="text-muted col-optional">{{ project.description|truncatechars:50 }}</td>
+                    <td><span class="badge badge-primary">{{ project.num_sheets }} sheet{{ project.num_sheets|pluralize }}</span></td>
+                    <td><span class="badge badge-success">{{ project.num_assets }} asset{{ project.num_assets|pluralize }}</span></td>
+                    <td class="text-muted col-optional">{{ project.created_at|date:"M d, Y" }}</td>
                     <td>
+                        <div class="project-actions">
                         <a href="{% url 'drawings:editor' project.pk %}" class="btn">Open Editor</a>
                         <a href="{% url 'drawings:project_detail' project.pk %}" class="btn" style="background: var(--btn-secondary);">Details</a>
-                        <a href="{% url 'drawings:export_project_sqlite' project.pk %}" class="btn" style="background: #17a2b8;" title="Export project">�</a>
+                        <a href="{% url 'drawings:export_project_sqlite' project.pk %}" class="btn" style="background: #17a2b8;" title="Download this project as a .docuweaver file">Export</a>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
+        </div>
         {% else %}
         <p class="text-muted">No projects yet. Create one to get started!</p>
         {% endif %}
@@ -50,9 +66,10 @@
 
 <!-- Create Project Modal -->
 <div id="createModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-modal-overlay); z-index: 1000;">
-    <div style="background: var(--bg-modal); color: var(--text-primary); max-width: 500px; margin: 100px auto; padding: 2rem; border-radius: 8px;">
+    <div class="project-list-dialog" style="background: var(--bg-modal); color: var(--text-primary); padding: 2rem; border-radius: 8px;">
         <h2 style="margin-bottom: 1rem;">Create New Project</h2>
         <form id="createForm">
+            {% csrf_token %}
             <div class="form-group">
                 <label>Project Name</label>
                 <input type="text" name="name" required>
@@ -71,7 +88,7 @@
 
 <!-- Import Project Modal -->
 <div id="importModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-modal-overlay); z-index: 1000;">
-    <div style="background: var(--bg-modal); color: var(--text-primary); max-width: 500px; margin: 100px auto; padding: 2rem; border-radius: 8px;">
+    <div class="project-list-dialog" style="background: var(--bg-modal); color: var(--text-primary); padding: 2rem; border-radius: 8px;">
         <h2 style="margin-bottom: 1rem;">Import Project</h2>
         <form id="importForm" enctype="multipart/form-data">
             {% csrf_token %}
@@ -128,6 +145,7 @@ document.getElementById('createForm').addEventListener('submit', async (e) => {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            'X-CSRFToken': formData.get('csrfmiddlewaretoken'),
         },
         body: JSON.stringify(data)
     });

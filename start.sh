@@ -7,7 +7,27 @@ cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
 if [ ! -x .venv/bin/python ]; then
   echo ">> Creating virtual environment (.venv)"
-  "$PY" -m venv .venv
+  existed=0; [ -e .venv ] && existed=1
+  if ! "$PY" -m venv .venv; then
+    # A failed attempt leaves .venv/bin/python without pip, and the next run
+    # would reuse it and fail on "No module named pip" every time.
+    [ "$existed" = 0 ] && rm -rf .venv
+    echo >&2
+    echo "Could not create the virtual environment. Fix the problem above (on Debian or" >&2
+    echo "Ubuntu, usually by installing the python3-venv package), then run $0 again." >&2
+    exit 1
+  fi
+fi
+# An environment left without pip by an earlier failed attempt: add pip now
+# that it may be available, instead of failing on every run.
+if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  echo ">> Installing pip into .venv"
+  if ! .venv/bin/python -m ensurepip --upgrade >/dev/null; then
+    echo >&2
+    echo "The .venv folder has no pip and it can't be added. Install your system's" >&2
+    echo "python3-venv package (Debian/Ubuntu), delete the .venv folder, then run $0 again." >&2
+    exit 1
+  fi
 fi
 . .venv/bin/activate
 
@@ -18,8 +38,8 @@ python -m pip install -q -r requirements.txt
 if [ ! -f .env ]; then
   echo ">> Creating .env with a fresh secret key"
   cp .env.example .env
-  KEY=$(python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())")
-  sed -i.bak "s|^DJANGO_SECRET_KEY=.*|DJANGO_SECRET_KEY=${KEY}|" .env && rm -f .env.bak
+  # Not sed: the key alphabet includes "&", which sed reads as "the match".
+  python -c 'import re;from django.core.management.utils import get_random_secret_key as g;p=".env";s=open(p).read();open(p,"w").write(re.sub(r"(?m)^DJANGO_SECRET_KEY=.*$",lambda m:"DJANGO_SECRET_KEY="+g(),s))'
 fi
 
 echo ">> Applying database migrations"

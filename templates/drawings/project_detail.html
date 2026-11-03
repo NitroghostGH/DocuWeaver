@@ -26,7 +26,7 @@
                 <button class="btn" onclick="showUploadModal()">+ Upload PDF</button>
             </div>
 
-            {% if project.sheets.all %}
+            {% if sheets %}
             <table>
                 <thead>
                     <tr>
@@ -36,7 +36,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for sheet in project.sheets.all %}
+                    {% for sheet in sheets %}
                     <tr>
                         <td>{{ sheet.name }}</td>
                         <td>{{ sheet.page_number }}</td>
@@ -57,8 +57,8 @@
                 <button class="btn" onclick="showImportModal()">+ Import CSV</button>
             </div>
 
-            <p><span class="badge badge-success">{{ project.assets.count }} total assets</span></p>
-            <p><span class="badge badge-primary">{{ project.assets.filter.count }} adjusted</span></p>
+            <p><span class="badge badge-success">{{ asset_count }} total assets</span></p>
+            <p><span class="badge badge-primary">{{ adjusted_count }} adjusted</span></p>
         </div>
     </div>
 
@@ -88,6 +88,7 @@
     <div style="background: var(--bg-modal); color: var(--text-primary); max-width: 500px; margin: 100px auto; padding: 2rem; border-radius: 8px;">
         <h2 style="margin-bottom: 1rem;">Upload PDF Sheet</h2>
         <form id="uploadForm" enctype="multipart/form-data">
+            {% csrf_token %}
             <div class="form-group">
                 <label>Sheet Name</label>
                 <input type="text" name="name" required>
@@ -117,6 +118,7 @@
             Optional: name, description, and any other metadata columns
         </p>
         <form id="importForm" enctype="multipart/form-data">
+            {% csrf_token %}
             <div class="form-group">
                 <label>CSV File</label>
                 <input type="file" name="file" accept=".csv" required>
@@ -154,14 +156,16 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
 
     const response = await fetch(`/api/projects/${projectId}/sheets/`, {
         method: 'POST',
+        headers: { 'X-CSRFToken': formData.get('csrfmiddlewaretoken') },
         body: formData
     });
 
     if (response.ok) {
         window.location.reload();
     } else {
-        const error = await response.json();
-        alert('Error uploading: ' + JSON.stringify(error));
+        const error = await response.json().catch(() => ({error: 'HTTP ' + response.status}));
+        alert('Error uploading: ' + (error.error || error.detail ||
+            (error.pdf_file && error.pdf_file.join(' ')) || JSON.stringify(error)));
     }
 });
 
@@ -171,6 +175,7 @@ document.getElementById('importForm').addEventListener('submit', async (e) => {
 
     const response = await fetch(`/api/projects/${projectId}/import-csv/`, {
         method: 'POST',
+        headers: { 'X-CSRFToken': formData.get('csrfmiddlewaretoken') },
         body: formData
     });
 

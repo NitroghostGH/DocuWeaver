@@ -65,7 +65,7 @@
         importCsvFile = fileInput.files[0];
 
         try {
-            var text = await importCsvFile.text();
+            var text = (await importCsvFile.text()).replace(/^\ufeff/, '');
             var firstLine = text.split('\n')[0].trim();
             importCsvHeaders = firstLine.split(',').map(function(h) {
                 return h.trim().replace(/^["']|["']$/g, '');
@@ -110,16 +110,21 @@
             { id: 'map-name', role: 'name', required: false }
         ];
 
+        // "Asset_ID", "asset id" and "Asset-ID" all match a preset "asset id".
+        function normaliseHeader(h) {
+            return String(h).toLowerCase().replace(/[\s_\-]+/g, ' ').trim();
+        }
+
         roles.forEach(function(item) {
             var select = document.getElementById(item.id);
             select.innerHTML = '';
 
-            if (!item.required) {
-                var noneOpt = document.createElement('option');
-                noneOpt.value = '';
-                noneOpt.textContent = '-- None --';
-                select.appendChild(noneOpt);
-            }
+            // Nothing is picked unless a column matches: defaulting to the
+            // first column mapped X and Y to the ID column.
+            var noneOpt = document.createElement('option');
+            noneOpt.value = '';
+            noneOpt.textContent = item.required ? '-- Select --' : '-- None --';
+            select.appendChild(noneOpt);
 
             importCsvHeaders.forEach(function(header) {
                 var opt = document.createElement('option');
@@ -128,34 +133,22 @@
                 select.appendChild(opt);
             });
 
-            var matched = false;
             if (rememberedMapping && rememberedMapping[item.role] && importCsvHeaders.includes(rememberedMapping[item.role])) {
                 select.value = rememberedMapping[item.role];
-                matched = true;
+                return;
             }
 
-            if (!matched) {
-                var presetNames = importColumnPresets[item.role] || [];
-                for (var i = 0; i < presetNames.length; i++) {
-                    var match = importCsvHeaders.find(function(h) {
-                        return h.toLowerCase() === presetNames[i].toLowerCase();
-                    });
-                    if (match) {
-                        select.value = match;
-                        matched = true;
-                        break;
-                    }
+            // Column presets (Admin > Column presets), then the role's own name
+            var candidates = (importColumnPresets[item.role] || []).concat([item.role]);
+            for (var i = 0; i < candidates.length; i++) {
+                var wanted = normaliseHeader(candidates[i]);
+                var match = importCsvHeaders.find(function(h) { return normaliseHeader(h) === wanted; });
+                if (match) {
+                    select.value = match;
+                    return;
                 }
             }
-
-            if (!matched) {
-                var fallback = importCsvHeaders.find(function(h) {
-                    return h.toLowerCase() === item.role.toLowerCase();
-                });
-                if (fallback) {
-                    select.value = fallback;
-                }
-            }
+            select.value = '';
         });
 
         // Restore asset type mode
@@ -207,9 +200,10 @@
             mapping.asset_type = document.getElementById('map-asset-type').value;
         }
 
+        var roleLabels = { asset_id: 'Asset ID', asset_type: 'Asset Type', x: 'X / Longitude / Easting', y: 'Y / Latitude / Northing' };
         for (var role in mapping) {
             if (!mapping[role]) {
-                alert('Please select a column for "' + role + '".');
+                alert('Choose the CSV column for "' + (roleLabels[role] || role) + '".');
                 return;
             }
         }
@@ -443,8 +437,14 @@
                             var result = await response.json();
                             totalSheets += Array.isArray(result) ? result.length : 1;
                         } else {
-                            var error = await response.json();
-                            errors.push(file.name + ': ' + JSON.stringify(error));
+                            var error = await response.json().catch(function() {
+                                return {error: 'HTTP ' + response.status};
+                            });
+                            // A PDF that can't be used comes back as {error: "..."};
+                            // a failed field check as {pdf_file: ["..."]}.
+                            errors.push(file.name + ': ' + (error.error || error.detail ||
+                                (error.pdf_file && error.pdf_file.join(' ')) ||
+                                JSON.stringify(error)));
                         }
                     } catch (error) {
                         console.error('Upload error for ' + file.name + ':', error);
@@ -480,42 +480,75 @@
 
     // ==================== Export ====================
 
-    async function exportProject() {
+    /**
+     * Download every sheet as one PDF with the asset markers drawn on the
+     * original pages (server side, at the positions the editor shows).
+     */
+    async function exportComposedPdf(button) {
+        if (button) button.disabled = true;
         try {
-            var response = await fetch('/api/projects/' + PROJECT_ID + '/export/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': DW.getCSRFToken()
-                },
-                body: JSON.stringify({})
-            });
-
-            var result = await response.json();
-            if (response.ok) {
-                alert('Export complete! Files saved to: ' + result.exports.map(function(e) { return e.output_path; }).join(', '));
-            } else {
-                alert('Export error: ' + result.error);
+            var response = await fetch('/api/projects/' + PROJECT_ID + '/export/');
+            if (!response.ok) {
+                throw new Error(await DW.responseError(response));
             }
+            var blob = await response.blob();
+            var disposition = response.headers.get('Content-Disposition') || '';
+            var filename = filenameFromDisposition(disposition) || 'drawings.pdf';
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
         } catch (error) {
-            console.error('Export error:', error);
+            alert('Could not export the PDF: ' + error.message);
+        } finally {
+            if (button) button.disabled = false;
         }
     }
 
+    /** The filename in a Content-Disposition header (RFC 6266), or null. */
+    function filenameFromDisposition(header) {
+        var extended = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+        if (extended) {
+            try { return decodeURIComponent(extended[1].trim()); } catch (e) { /* fall through */ }
+        }
+        var quoted = /filename\s*=\s*"((?:[^"\\]|\\.)*)"/i.exec(header);
+        if (quoted) return quoted[1].replace(/\\(.)/g, '$1');
+        var bare = /filename\s*=\s*([^;\s]+)/i.exec(header);
+        return bare ? bare[1] : null;
+    }
+
     function downloadReport() {
-        window.open('/api/projects/' + PROJECT_ID + '/adjustment-report/?format=csv', '_blank');
+        window.open('/api/projects/' + PROJECT_ID + '/adjustment-report/?output=csv', '_blank');
     }
 
     // ==================== Import Batches ====================
+
+    // Both batch panels need the same list; share one request between them.
+    var batchListRequest = null;
+    function fetchImportBatches() {
+        if (!batchListRequest) {
+            batchListRequest = fetch('/api/projects/' + PROJECT_ID + '/import-batches/')
+                .then(function(resp) {
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    return resp.json();
+                })
+                .finally(function() {
+                    setTimeout(function() { batchListRequest = null; }, 0);
+                });
+        }
+        return batchListRequest;
+    }
 
     async function renderImportBatches() {
         var container = document.getElementById('import-batches');
         if (!container) return;
 
         try {
-            var resp = await fetch('/api/projects/' + PROJECT_ID + '/import-batches/');
-            if (!resp.ok) return;
-            var allBatches = await resp.json();
+            var allBatches = await fetchImportBatches();
 
             var batches = allBatches.filter(function(b) { return !b.filename.startsWith('links:'); });
 
@@ -554,8 +587,8 @@
                 var visCheckbox = document.createElement('input');
                 visCheckbox.type = 'checkbox';
                 visCheckbox.className = 'batch-visibility';
-                visCheckbox.checked = true;
-                visCheckbox.title = 'Toggle batch visibility';
+                visCheckbox.checked = !state.hiddenBatches[batch.id];
+                visCheckbox.title = 'Show or hide the assets from this import';
                 visCheckbox.style.marginRight = '0.3rem';
                 visCheckbox.addEventListener('change', function() {
                     toggleBatchVisibility(batch.id, this.checked);
@@ -579,9 +612,7 @@
         if (!container) return;
 
         try {
-            var resp = await fetch('/api/projects/' + PROJECT_ID + '/import-batches/');
-            if (!resp.ok) return;
-            var allBatches = await resp.json();
+            var allBatches = await fetchImportBatches();
 
             var batches = allBatches.filter(function(b) { return b.filename.startsWith('links:'); });
 
@@ -614,8 +645,8 @@
                 var visCheckbox = document.createElement('input');
                 visCheckbox.type = 'checkbox';
                 visCheckbox.className = 'batch-visibility';
-                visCheckbox.checked = true;
-                visCheckbox.title = 'Toggle batch visibility';
+                visCheckbox.checked = !state.hiddenBatches[batch.id];
+                visCheckbox.title = 'Show or hide the links from this import';
                 visCheckbox.style.marginRight = '0.3rem';
                 visCheckbox.addEventListener('change', function() {
                     toggleLinkBatchVisibility(batch.id, this.checked);
@@ -644,6 +675,7 @@
 
             if (resp.ok) {
                 if (typeof loadProjectData === 'function') await loadProjectData();
+                if (typeof loadLayerGroups === 'function') await loadLayerGroups();
             } else {
                 alert('Failed to delete batch');
             }
@@ -652,29 +684,21 @@
         }
     }
 
-    function toggleLinkBatchVisibility(batchId, visible) {
-        var canvas = state.canvas;
-        if (!canvas) return;
-        state.links.forEach(function(link) {
-            if (link.import_batch === batchId) {
-                var fabricObj = canvas.getObjects().find(function(o) { return o.linkId === link.id; });
-                if (fabricObj) {
-                    fabricObj.visible = visible;
-                }
-            }
-        });
-        canvas.requestRenderAll();
+    // The eye on an import batch hides what that import created, wherever it
+    // has been filed since. Kept per browser (applyVisibility does the hiding).
+    function toggleBatchVisibility(batchId, visible) {
+        if (visible) delete state.hiddenBatches[batchId];
+        else state.hiddenBatches[batchId] = true;
+        DW.storage.set('docuweaver-hidden-batches-' + PROJECT_ID, state.hiddenBatches);
+        if (typeof applyVisibility === 'function') applyVisibility();
     }
 
-    function toggleBatchVisibility(batchId, visible) {
-        var canvas = state.canvas;
-        if (!canvas) return;
-        canvas.getObjects().forEach(function(obj) {
-            if (obj.assetData && obj.assetData.import_batch === batchId) {
-                obj.visible = visible;
-            }
-        });
-        canvas.renderAll();
+    function toggleLinkBatchVisibility(batchId, visible) {
+        toggleBatchVisibility(batchId, visible);
+    }
+
+    function restoreBatchVisibility() {
+        state.hiddenBatches = DW.storage.get('docuweaver-hidden-batches-' + PROJECT_ID, {}) || {};
     }
 
     function showBatchTypeSelect(batchDiv, batchId) {
@@ -787,6 +811,8 @@
             if (typeof renderAssetList === 'function') renderAssetList();
             if (typeof refreshAssets === 'function') refreshAssets();
             renderImportBatches();
+            // The batch's folder is deleted with it when nothing else is in it
+            if (typeof loadLayerGroups === 'function') await loadLayerGroups();
         } catch (err) {
             console.error('Error deleting batch:', err);
             alert('Error deleting batch');
@@ -860,7 +886,8 @@
         importLinksStepNext: importLinksStepNext,
         importLinksStepBack: importLinksStepBack,
         importLinksWithMapping: importLinksWithMapping,
-        exportProject: exportProject,
+        exportComposedPdf: exportComposedPdf,
+        restoreBatchVisibility: restoreBatchVisibility,
         downloadReport: downloadReport,
         renderImportBatches: renderImportBatches,
         renderLinkImportBatches: renderLinkImportBatches,
@@ -888,7 +915,8 @@
     window.importLinksStepNext = importLinksStepNext;
     window.importLinksStepBack = importLinksStepBack;
     window.importLinksWithMapping = importLinksWithMapping;
-    window.exportProject = exportProject;
+    window.exportComposedPdf = exportComposedPdf;
+    window.restoreBatchVisibility = restoreBatchVisibility;
     window.downloadReport = downloadReport;
     window.renderImportBatches = renderImportBatches;
     window.renderLinkImportBatches = renderLinkImportBatches;
@@ -901,5 +929,4 @@
     window.deleteAsset = deleteAsset;
     window.deleteLink = deleteLink;
 
-    console.log('DocuWeaver imports module loaded');
 })();

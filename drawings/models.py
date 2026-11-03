@@ -1,9 +1,38 @@
 """Models for the PDF alignment and asset overlay system."""
+import logging
 import math
 
-from django.db import models
+from django.db import models, transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 from .validators import ImageFileValidator, PDFFileValidator
+
+logger = logging.getLogger(__name__)
+
+
+def save_fields(instance, fields):
+    """Save only `fields` (plus any auto_now timestamp).
+
+    A plain save() writes every column from the copy loaded at the start of
+    the request, so two requests that change different fields of one row
+    (a drag saving a sheet's offset while a folder move saves its folder)
+    can undo each other.
+    """
+    fields = list(fields)
+    fields += [f.name for f in instance._meta.concrete_fields
+               if getattr(f, 'auto_now', False) and f.name not in fields]
+    instance.save(update_fields=fields)
+
+
+def parent_creates_cycle(group, parent):
+    """True if making `parent` the parent of folder `group` would loop back to `group`."""
+    ancestor = parent
+    while ancestor is not None:
+        if ancestor.pk == group.pk:
+            return True
+        ancestor = ancestor.parent_group
+    return False
 
 
 class Project(models.Model):
@@ -58,7 +87,7 @@ class Sheet(models.Model):
     name = models.CharField(max_length=255)
     pdf_file = models.FileField(
         upload_to='pdfs/',
-        validators=[PDFFileValidator(max_size=50 * 1024 * 1024)]  # 50 MB max
+        validators=[PDFFileValidator()]  # size limit: DOCUWEAVER_MAX_UPLOAD_MB
     )
     page_number = models.PositiveIntegerField(default=1, help_text="Page number within the PDF")
 
@@ -94,6 +123,7 @@ class Sheet(models.Model):
     offset_y = models.FloatField(default=0.0, help_text="Y offset in pixels")
     rotation = models.FloatField(default=0.0, help_text="Rotation in degrees")
     z_index = models.IntegerField(default=0, help_text="Layer order (higher = on top)")
+    visible = models.BooleanField(default=True, help_text="Shown on the canvas (the sidebar eye toggle)")
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -103,23 +133,31 @@ class Sheet(models.Model):
     def __str__(self):
         return f"{self.name} (Page {self.page_number})"
 
-    def delete(self, *args, **kwargs):
-        pdf_path = self.pdf_file.name if self.pdf_file else None
-        rendered_path = self.rendered_image.name if self.rendered_image else None
+    # Files are removed by delete_sheet_files (post_delete), which also runs
+    # when a project's sheets are deleted with it.
 
-        # Check if other sheets share the same PDF file
-        other_pdf_users = 0
-        if pdf_path:
-            other_pdf_users = Sheet.objects.filter(pdf_file=pdf_path).exclude(pk=self.pk).count()
 
-        # Delete the DB record (without auto-deleting the file)
-        super().delete(*args, **kwargs)
+@receiver(post_delete, sender=Sheet)
+def delete_sheet_files(sender, instance, **kwargs):
+    """Remove a deleted sheet's PDF and rendered image, unless another sheet
+    still uses them (every page of one upload shares one stored PDF).
 
-        # Only delete files if no other sheets reference them
-        if pdf_path and other_pdf_users == 0:
-            self.pdf_file.storage.delete(pdf_path)
-        if rendered_path:
-            self.rendered_image.storage.delete(rendered_path)
+    Runs after the transaction commits: a rolled-back delete must still find
+    its files, and the check sees every sheet deleted in the same transaction
+    (a whole project) as gone.
+    """
+    files = [(field, f.storage, f.name) for field, f in
+             (('pdf_file', instance.pdf_file), ('rendered_image', instance.rendered_image)) if f]
+
+    def remove():
+        for field, storage, name in files:
+            if not Sheet.objects.filter(**{field: name}).exists():
+                try:
+                    storage.delete(name)
+                except OSError:
+                    logger.warning("Could not delete %s", name)
+
+    transaction.on_commit(remove)
 
 
 class JoinMark(models.Model):
@@ -221,6 +259,7 @@ class Asset(models.Model):
 
     # Flag to track if asset has been manually adjusted
     is_adjusted = models.BooleanField(default=False, db_index=True)
+    visible = models.BooleanField(default=True, help_text="Shown on the canvas (the sidebar eye toggle)")
 
     # Additional metadata from CSV
     metadata = models.JSONField(default=dict, blank=True)
@@ -347,6 +386,7 @@ class Link(models.Model):
         ('other', 'Other'),
     ]
     link_type = models.CharField(max_length=20, choices=LINK_TYPE_CHOICES, default='other')
+    visible = models.BooleanField(default=True, help_text="Shown on the canvas (the sidebar eye toggle)")
 
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -418,7 +458,7 @@ class LayerGroup(models.Model):
     @property
     def is_joined(self):
         """Return True if this group is joined to a parent."""
-        return self.parent_group is not None
+        return self.parent_group_id is not None
 
     @property
     def item_count(self):

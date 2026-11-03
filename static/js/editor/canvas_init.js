@@ -30,7 +30,10 @@
             width: containerRect.width,
             height: containerRect.height,
             backgroundColor: '#e0e0e0',
-            selection: false
+            selection: false,
+            // Without this Fabric never reports the middle button, so
+            // middle-drag panning and middle-click "end chain" did nothing.
+            fireMiddleClick: true
         });
         
         // Sync to legacy global
@@ -64,7 +67,6 @@
             state.canvas.renderAll();
         });
         
-        console.log('Canvas initialized');
     }
     
     /**
@@ -189,19 +191,19 @@
                 DW.tools.handleSelectClick(opt);
                 break;
             case 'crop':
-                DW.tools.handleCropClick(opt);
+                DW.crop.handleCropClick(opt);
                 break;
             case 'split':
                 DW.split.handleSplitClick(opt);
                 break;
             case 'calibrate':
-                DW.tools.handleCalibrationClick(opt);
+                DW.calibration.handleCalibrationClick(opt);
                 break;
             case 'origin':
-                DW.tools.handleOriginClick(opt);
+                DW.calibration.handleOriginClick(opt);
                 break;
             case 'verify-asset':
-                DW.tools.handleVerifyClick(opt);
+                DW.calibration.handleVerifyClick(opt);
                 break;
             case 'measure':
                 DW.tools.handleMeasureClick(opt);
@@ -238,7 +240,7 @@
             lastPosX = evt.clientX;
             lastPosY = evt.clientY;
         } else if (state.currentMode === 'crop' && state.isCropping) {
-            DW.tools.handleCropMove(opt);
+            DW.crop.handleCropMove(opt);
         } else if (state.currentMode === 'split' && state.isSplitting) {
             DW.split.handleSplitMove(opt);
         } else if (state.currentMode === 'measure') {
@@ -271,7 +273,7 @@
             if (typeof debouncedRefreshOSM === 'function') debouncedRefreshOSM();
             if (typeof debouncedSaveViewportState === 'function') debouncedSaveViewportState();
         } else if (state.currentMode === 'crop') {
-            DW.tools.handleCropEnd(opt);
+            DW.crop.handleCropEnd(opt);
         } else if (state.currentMode === 'split') {
             DW.split.handleSplitEnd(opt);
         }
@@ -471,5 +473,4 @@
         });
     }
     
-    console.log('DocuWeaver canvas module loaded');
 })();

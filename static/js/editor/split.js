@@ -45,7 +45,7 @@
 
         if (!state.isSplitting) {
             if (!clickedSheetObj) {
-                console.log('Split line must start on a sheet');
+                DW.showToast('Start the split line on a sheet', 'warning');
                 return;
             }
 
@@ -115,7 +115,6 @@
 
                 if (response.ok) {
                     const result = await response.json();
-                    console.log('Sheet split successfully:', result);
 
                     // Append cut to original sheet's existing cuts
                     const originalId = state.splitTargetSheet.sheetData.id;
@@ -140,49 +139,20 @@
 
                     // Load the new sheet onto canvas
                     if (newSheet.rendered_image_url) {
-                        fabric.Image.fromURL(newSheet.rendered_image_url, function(img) {
-                            img.set({
-                                left: newSheet.offset_x,
-                                top: newSheet.offset_y,
-                                angle: newSheet.rotation,
-                                selectable: state.currentMode === 'select',
-                                evented: true,
-                                hasControls: false,
-                                hasBorders: false,
-                                lockScalingX: true,
-                                lockScalingY: true,
-                                lockUniScaling: true,
-                                lockRotation: false,
-                            });
-                            img.sheetData = newSheet;
-                            canvas.add(img);
-
-                            // Apply PDF inversion FIRST
-                            if (state.isPdfInverted) {
-                                if (!img.filters) img.filters = [];
-                                img.filters.push(new fabric.Image.filters.Invert());
-                                if (typeof applyFiltersPreservingSize === 'function') {
-                                    applyFiltersPreservingSize(img);
-                                }
-                            }
-
-                            // Apply opposite cut from server response
-                            const newCuts = newSheet.cuts_json || [];
-                            if (newCuts.length > 0) {
-                                state.sheetCutData[newSheet.id] = newCuts;
-                                if (typeof applyAllCuts === 'function') {
-                                    applyAllCuts(img, newCuts);
-                                }
-                            }
-
-                            canvas.renderAll();
+                        fabric.Image.fromURL(newSheet.rendered_image_url, function(img, isError) {
+                            if (isError || !img.getElement()) return;
+                            canvas.add(setupSheetImage(img, newSheet));
+                            if (typeof applyRenderingHierarchy === 'function') applyRenderingHierarchy();
                         }, { crossOrigin: 'anonymous' });
                     }
 
+                    // Undoing earlier steps would now leave the two halves
+                    // out of step, so the history stops here.
+                    if (typeof clearUndoHistory === 'function') clearUndoHistory('the sheet was split');
+
                     alert('Sheet split successfully! The new sheet shows the opposite side.');
                 } else {
-                    const error = await response.json();
-                    alert('Error splitting sheet: ' + JSON.stringify(error));
+                    alert('Could not split the sheet: ' + await DW.responseError(response));
                 }
             } catch (error) {
                 console.error('Error splitting sheet:', error);
@@ -214,5 +184,4 @@
     window.handleSplitMove = handleSplitMove;
     window.handleSplitEnd = handleSplitEnd;
 
-    console.log('DocuWeaver split module loaded');
 })();

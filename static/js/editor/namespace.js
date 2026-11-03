@@ -4,19 +4,10 @@
  * This file establishes the shared namespace and state for all editor modules.
  * MUST be loaded first before any other editor modules.
  * 
- * Module Loading Order:
- * 1. namespace.js (this file) - Shared state and utilities
- * 2. canvas_init.js - Canvas initialization and events
- * 3. tools.js - Tool modes (pan, select, crop, split, calibrate, measure)
- * 4. sheets.js - Sheet rendering and manipulation
- * 5. assets.js - Asset rendering and manipulation  
- * 6. links.js - Link layer rendering
- * 7. osm.js - OpenStreetMap tile layer
- * 8. layers.js - Layer groups and folder management
- * 9. measurements.js - Measurement tool and config
- * 10. viewport.js - Zoom, pan, rotation
- * 11. modals.js - Modal dialogs and forms
- * 12. main.js - Initialization and event binding
+ * The script order in templates/drawings/editor.html is the source of truth:
+ * namespace, undo, viewport, tools, canvas_init, crop, split, calibration,
+ * assets, links, sheets, osm, measurements, layers, imports, sidebar, main,
+ * then verify (a self-check).
  */
 
 // Create the global namespace
@@ -83,11 +74,7 @@ DocuWeaver.state = {
     verifyRefMarker: null,
     
     // Measurement state
-    measurePoints: [],
     measureMode: 'single',
-    measureOverlays: [],
-    measurePreviewLine: null,
-    measurePreviewLabel: null,
     
     // PDF inversion
     isPdfInverted: false,
@@ -101,19 +88,21 @@ DocuWeaver.state = {
     linkGroups: [],
     sheetGroups: [],
     measurementGroups: [],
-    measurementSets: [],
     groupVisibility: {},
+    folderById: new Map(),   // every folder, nested ones too (layers.js)
+    hiddenSections: {},      // section eyes, per browser (main.js)
+    hiddenBatches: {},       // import-batch eyes, per browser (imports.js)
     draggedItem: null,
     
     // OSM layer
     osmTiles: [],
     osmEnabled: false,
     osmOpacity: 0.7,
-    osmZIndex: 0,
     osmRefreshTimeout: null,
     osmDarkMode: false,
     osmCurrentZoom: null,
     osmLoadedTiles: new Map(),
+    osmPendingTiles: new Set(),
     osmTileCache: {},
     osmTileCacheStats: {
         maxSize: 20 * 1024 * 1024,
@@ -175,6 +164,61 @@ DocuWeaver.showToast = function(message, type = 'info', duration = 3000) {
 };
 
 /**
+ * Per-browser settings in localStorage. Reads and writes can throw (private
+ * windows, blocked site data), and the editor must work without them.
+ */
+DocuWeaver.storage = {
+    get(key, fallback) {
+        try {
+            const raw = localStorage.getItem(key);
+            return raw === null ? fallback : JSON.parse(raw);
+        } catch (e) {
+            return fallback;
+        }
+    },
+    set(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch (e) {
+            // Not saved; the setting lasts until the page is reloaded.
+        }
+    }
+};
+
+/**
+ * Compare names the way people number things: V2 before V10.
+ */
+DocuWeaver.naturalCompare = function(a, b) {
+    return String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+};
+
+/**
+ * A readable message from a failed API response: DRF field errors, our
+ * {error} / {message} bodies, or the HTTP status.
+ */
+DocuWeaver.responseError = async function(response) {
+    let body = null;
+    try {
+        body = await response.json();
+    } catch (e) {
+        return `HTTP ${response.status}`;
+    }
+    const flatten = (value) => {
+        if (value == null) return '';
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) return value.map(flatten).join(' ');
+        if (typeof value === 'object') {
+            return Object.entries(value)
+                .map(([k, v]) => (k === 'non_field_errors' || k === 'error' || k === 'detail' || k === 'message')
+                    ? flatten(v) : `${k}: ${flatten(v)}`)
+                .join(' ');
+        }
+        return String(value);
+    };
+    return flatten(body.error || body.message || body.detail || body) || `HTTP ${response.status}`;
+};
+
+/**
  * Shorthand for getting canvas
  */
 DocuWeaver.getCanvas = function() {
@@ -208,4 +252,3 @@ DocuWeaver.syncLegacyGlobals = function() {
     window.refPixelY = DocuWeaver.state.refPixelY;
 };
 
-console.log('DocuWeaver namespace initialized');

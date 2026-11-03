@@ -1,7 +1,7 @@
 /**
  * DocuWeaver Canvas Editor - Undo System
  *
- * Manages undo stack for sheet transforms and cut operations.
+ * Manages the undo stack (Ctrl+Z).
  *
  * Depends on: namespace.js, crop.js (applyAllCuts, saveCutData)
  */
@@ -12,10 +12,17 @@
     const DW = window.DocuWeaver;
     const state = DW.state;
 
+    // Ctrl+Z undoes, newest first: sheet moves and rotations, typed sheet
+    // properties, cuts (add, flip, clear) and asset adjustments. An action
+    // that can't be undone (a split) clears the history, so Ctrl+Z never
+    // reaches past it to an older, unrelated change.
+
+    let historyStoppedBecause = null;
+
     /**
-     * Save state for undo functionality
-     * @param {string} actionType - Type of action: 'transform', 'cut', 'clearCut'
-     * @param {object} data - State data to save
+     * Record an action for undo.
+     * @param {string} actionType - 'transform', 'sheetProperty', 'cut', 'clearCut' or 'assetAdjust'
+     * @param {object} data - What undo needs to restore
      */
     function saveUndoState(actionType, data) {
         state.undoStack.push({
@@ -23,38 +30,95 @@
             timestamp: Date.now(),
             data: JSON.parse(JSON.stringify(data))  // Deep clone
         });
+        historyStoppedBecause = null;
 
-        // Limit stack size
         if (state.undoStack.length > state.MAX_UNDO_STEPS) {
             state.undoStack.shift();
         }
-
-        console.log('Undo state saved:', actionType, data);
     }
+
+    /** Forget the undo history after an action that can't be undone. */
+    function clearUndoHistory(reason) {
+        state.undoStack.length = 0;
+        historyStoppedBecause = reason || null;
+    }
+
+    const UNDO_LABELS = {
+        transform: 'sheet move',
+        sheetProperty: 'sheet change',
+        cut: 'cut',
+        clearCut: 'clear cuts',
+        assetAdjust: 'asset adjustment'
+    };
 
     /**
      * Undo the last action
      */
     async function undo() {
         if (state.undoStack.length === 0) {
-            console.log('Nothing to undo');
+            DW.showToast(historyStoppedBecause
+                ? `Nothing to undo since ${historyStoppedBecause}`
+                : 'Nothing to undo', 'info');
             return;
         }
 
         const lastAction = state.undoStack.pop();
-        console.log('Undoing action:', lastAction.type, lastAction.data);
-
-        switch (lastAction.type) {
-            case 'transform':
-                await undoTransform(lastAction.data);
-                break;
-            case 'cut':
-                await undoCut(lastAction.data);
-                break;
-            case 'clearCut':
-                await undoClearCut(lastAction.data);
-                break;
+        try {
+            switch (lastAction.type) {
+                case 'transform':
+                    await undoTransform(lastAction.data);
+                    break;
+                case 'sheetProperty':
+                    await undoSheetProperty(lastAction.data);
+                    break;
+                case 'cut':
+                    await undoCut(lastAction.data);
+                    break;
+                case 'clearCut':
+                    await undoClearCut(lastAction.data);
+                    break;
+                case 'assetAdjust':
+                    await undoAssetAdjust(lastAction.data);
+                    break;
+            }
+            DW.showToast(`Undone: ${UNDO_LABELS[lastAction.type] || lastAction.type}`, 'success', 1500);
+        } catch (error) {
+            console.error('Undo failed:', error);
+            DW.showToast('Could not undo: ' + error.message, 'error');
         }
+    }
+
+    async function undoSheetProperty(data) {
+        const { sheetId, property, previous } = data;
+        if (typeof selectSheet === 'function' &&
+            (!state.selectedSheet || state.selectedSheet.id !== sheetId)) {
+            selectSheet(sheetId);
+        }
+        if (typeof updateSheetProperty === 'function') {
+            await updateSheetProperty(property, previous, false);
+        }
+        if (typeof selectSheet === 'function' && state.selectedSheet && state.selectedSheet.id === sheetId) {
+            selectSheet(sheetId);
+        }
+    }
+
+    async function undoAssetAdjust(data) {
+        const { assetId, previousX, previousY } = data;
+        const response = await fetch(`/api/assets/${assetId}/adjust/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': DW.getCSRFToken()
+            },
+            body: JSON.stringify({ x: previousX, y: previousY, notes: 'Undo' })
+        });
+        if (!response.ok) throw new Error(await DW.responseError(response));
+        const updated = await response.json();
+        const index = state.assets.findIndex(a => a.id === updated.id);
+        if (index >= 0) state.assets[index] = updated;
+        const wasSelected = state.selectedAsset && state.selectedAsset.id === updated.id;
+        if (typeof refreshAssets === 'function') refreshAssets();
+        if (wasSelected && typeof selectAsset === 'function') selectAsset(updated.id);
     }
 
     /**
@@ -96,7 +160,7 @@
             }
 
             // Save to server
-            await fetch(`/api/sheets/${sheetId}/`, {
+            const response = await fetch(`/api/sheets/${sheetId}/`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
@@ -108,6 +172,8 @@
                     rotation: previousRotation
                 })
             });
+            if (!response.ok) throw new Error(await DW.responseError(response));
+            if (typeof replaceSheetData === 'function') replaceSheetData(await response.json());
         }
     }
 
@@ -175,12 +241,13 @@
 
     DW.undo = {
         saveUndoState,
+        clearUndoHistory,
         undo
     };
 
     // Backward compatibility
     window.saveUndoState = saveUndoState;
+    window.clearUndoHistory = clearUndoHistory;
     window.undo = undo;
 
-    console.log('DocuWeaver undo module loaded');
 })();
