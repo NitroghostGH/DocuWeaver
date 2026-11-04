@@ -1987,7 +1987,7 @@ class ProjectFileRoundTripTests(TestCase):
         self.assertEqual(after, before)
 
     def test_old_file_with_same_named_folders(self):
-        """Files from before 1.0.2 refer to folders by name only."""
+        """Files from before 1.1.0 refer to folders by name only."""
         from .services.project_archive import create_project_from_data
 
         data = {
@@ -2338,7 +2338,7 @@ class SavedVisibilityTests(TestCase):
         self.assertEqual([copy.sheets.get().visible, copy.assets.get().visible, copy.links.get().visible],
                          [False, False, False])
 
-        # A file from before 1.0.2 has no visibility: everything is shown.
+        # A file from before 1.1.0 has no visibility: everything is shown.
         for key in ('sheets', 'assets', 'links'):
             for record in data[key]:
                 del record['visible']

@@ -1,6 +1,6 @@
 """Store the cascade offset the editor used to apply on the fly.
 
-Until 1.0.2 the editor drew every sheet saved at (0, 0), other than the first,
+Until 1.1.0 the editor drew every sheet saved at (0, 0), other than the first,
 at (index * 50, index * 50), without saving that position. A sheet the user
 had deliberately placed at (0, 0) was therefore drawn somewhere else. The
 editor now draws saved positions as they are, and new sheets get their

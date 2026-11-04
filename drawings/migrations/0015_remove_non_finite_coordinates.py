@@ -1,6 +1,6 @@
 """Remove assets whose coordinates aren't finite numbers.
 
-Before 1.0.2 the asset CSV importer accepted "inf" as a coordinate. Such an
+Before 1.1.0 the asset CSV importer accepted "inf" as a coordinate. Such an
 asset could never be drawn, and once one was stored its project's whole asset
 list failed to load ("Out of range float values are not JSON compliant").
 The importer now rejects those rows; this removes any that were stored, and

@@ -7,7 +7,7 @@ Both carry the same JSON, built by `collect_project`.
 
 Records refer to each other by the id they had in the exporting database
 (`layer_group_id`, `parent_group_id`, `import_batch_id`, `linked_mark_id`).
-Files exported before 1.0.2 only had names (`layer_group_name`,
+Files exported before 1.1.0 only had names (`layer_group_name`,
 `parent_group_name`); those are still written, so older versions can read new
 files, and still read, with the closest match by name and folder type.
 
@@ -45,7 +45,7 @@ from ..models import (
 logger = logging.getLogger(__name__)
 
 # Marks exports whose sheet offsets are where the editor draws the sheets.
-# Older exports (before 1.0.2) left sheets at (0, 0) and the editor spread
+# Older exports (before 1.1.0) left sheets at (0, 0) and the editor spread
 # them out on the fly; see migration 0014_save_sheet_cascade_offsets.
 SHEET_OFFSETS_SAVED = 'saved'
 

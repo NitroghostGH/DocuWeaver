@@ -99,7 +99,7 @@ class SheetSerializer(SaveChangedFieldsMixin, serializers.ModelSerializer):
 
 class ImportBatchSerializer(serializers.ModelSerializer):
     # Counted live: the stored asset_count went stale whenever assets were
-    # deleted or (before 1.0.2) taken over by a later import.
+    # deleted or (before 1.1.0) taken over by a later import.
     asset_count = serializers.SerializerMethodField()
 
     class Meta:

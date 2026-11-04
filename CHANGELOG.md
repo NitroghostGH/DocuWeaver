@@ -4,17 +4,21 @@ All notable changes to DocuWeaver are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-11-04
 
 Fixes everyday actions that failed on a default install (sign-in on), where
 assets are drawn, project data that was lost or merged, and PDF uploads that
 failed or left half-made sheets, found by a browser review on 2026-11-01.
 With sign-in turned off, other websites can no longer change projects. Dark
 mode keeps drawing colours, hidden items and folders stay hidden, Ctrl+Z
-covers most edits, and the composed PDF export works. Checked against a drawing set with 18 surveyed
-valves: lat/lon assets now land within 1 mm of their drawn symbols
-(previously 0.3–0.6 m off) and MGA assets within 1 mm (previously mirrored,
-up to 19.5 m off).
+covers most edits, and the composed PDF export works. Checked against a
+drawing set with 18 surveyed valves: lat/lon assets now land within 1 mm of
+their drawn symbols (previously 0.3–0.6 m off) and MGA assets within 1 mm
+(previously mirrored, up to 19.5 m off).
+
+This is a minor release rather than a patch because it adds features and
+changes some settings and API behaviour. Read both "Upgrading" sections
+before updating.
 
 ### Upgrading: check existing projects
 Existing projects change in these ways, because they were wrong:
@@ -35,6 +39,12 @@ Existing projects change in these ways, because they were wrong:
 - **`/api/projects/<id>/export/`** is now a GET that returns the PDF. It was a POST that returned a path on the server.
 - **Sheets, assets and links** have a new `visible` field in the API.
 - The database upgrade adds two migrations: 0017 adds the `visible` columns, and 0018 adds common column names (such as Latitude, Longitude, Easting, Type) to the CSV column presets, keeping any you have set up.
+
+### Added
+- "Drawings with Assets (PDF)" in the editor's Export section downloads one PDF with a page per visible sheet and the assets drawn on it.
+- Eye toggles on sheets, assets and links are saved with the project, through the new `visible` API field.
+- Ctrl+Z also undoes typed sheet properties, cut flips and asset adjustments.
+- The `DOCUWEAVER_MAX_IMPORT_MB` setting caps the unpacked size of an imported project file (default 2048).
 
 ### Fixed
 - MGA and metre coordinates were plotted mirrored north–south.

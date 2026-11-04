@@ -179,7 +179,7 @@ REST_FRAMEWORK = {
 # ---------------------------------------------------------------------------
 
 # Largest PDF accepted for upload, in MB. Engineering drawing sets are often
-# well over 10 MB. (Before 1.0.2 this setting only changed when uploads were
+# well over 10 MB. (Before 1.1.0 this setting only changed when uploads were
 # buffered to disk; PDFs were capped at 50 MB whatever it said.)
 DOCUWEAVER_MAX_UPLOAD_MB = int(os.getenv('DOCUWEAVER_MAX_UPLOAD_MB', '50'))
 # Request bodies other than files (JSON, form fields). Uploaded files over

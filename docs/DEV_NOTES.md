@@ -181,7 +181,7 @@ Links and the OSM basemap go through the same two functions
   (`cascade_offset` in `api_views.py`); migration `0014` saved the offset the
   editor used to fake for sheets at (0, 0). Project files carry
   `"sheet_offsets": "saved"`; importing a file without it (exported before
-  1.0.2) applies the same rule (`apply_legacy_sheet_cascade` in
+  1.1.0) applies the same rule (`apply_legacy_sheet_cascade` in
   `drawings/services/project_archive.py`). Note `0014` also exists on the
   upstream `feature/join-mark-detection` branch; merging that branch needs a
   merge migration.
