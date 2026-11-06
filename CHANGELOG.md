@@ -4,6 +4,11 @@ All notable changes to DocuWeaver are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Browser tests (`pytest browser_tests`, Playwright) that drive the editor against a real server with sign-in on, using a drawing whose asset positions are known. CI runs them on every push.
+
 ## [1.1.0] - 2026-11-04
 
 Fixes everyday actions that failed on a default install (sign-in on), where

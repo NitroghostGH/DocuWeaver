@@ -1,0 +1,5 @@
+# Browser tests: pytest browser_tests (see browser_tests/conftest.py).
+# After installing, fetch the browser once:
+#   python -m playwright install --only-shell chromium
+-r requirements-dev.txt
+playwright==1.64.0

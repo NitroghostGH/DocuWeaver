@@ -22,7 +22,19 @@ python manage.py makemigrations --check     # every model change needs a committ
 pytest                                      # all tests must pass
 ```
 
-CI runs the same three commands on Python 3.10 to 3.13, and builds the Docker image.
+CI runs the same three commands on Python 3.10 to 3.13, runs the browser tests below, and builds the Docker image.
+
+### Browser tests
+
+`browser_tests/` drives the editor in headless Chromium against a real server, started the way a default install runs (`manage.py serve`, DEBUG off, sign-in on) with a throwaway data directory. It uses a generated 1:500 drawing whose valve positions are known, so it checks that markers land on their drawn symbols, as well as uploads, imports, the scale tool, dragging, undo, measurements, cuts, splits and the PDF export. Run them for any change to the editor JavaScript or templates:
+
+```bash
+pip install -r requirements-browser.txt
+python -m playwright install --only-shell chromium    # once; add --with-deps on a fresh Linux machine
+pytest browser_tests                                  # about 15 seconds
+```
+
+A test fails if the page logs a JavaScript error, a request to the server fails, or an alert reports an error. Failures leave a screenshot and the server log in `browser-test-artifacts/` (CI uploads that folder).
 
 ## Project layout
 
@@ -38,6 +50,7 @@ drawings/           The application
   auth.py           Login enforcement for page views
   management/       `manage.py serve` (Waitress server)
   tests.py          Test suite (pytest-django)
+browser_tests/      Browser tests (Playwright): the editor against a real server
 templates/          Django templates; editor.html holds the canvas UI
 static/js/editor/   Canvas editor modules, all under the window.DocuWeaver namespace
 static/js/vendor/   Third-party JS (Fabric.js), committed so the app works offline

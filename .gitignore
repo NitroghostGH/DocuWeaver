@@ -21,6 +21,7 @@ media/*
 
 # Tooling
 .pytest_cache/
+browser-test-artifacts/
 .ruff_cache/
 htmlcov/
 .coverage

@@ -38,7 +38,10 @@ Conventions:
   anything is missing). Add `?verify=1` to the editor URL for every check.
   It is the quickest way to spot a dropped function, and it should report no
   failures. When you add a function that another module or `editor.html`
-  calls, add it to `verify.js` too.
+  calls, add it to `verify.js` too. The browser tests fail if this line
+  isn't an all-pass.
+- `browser_tests/` (see below) catches what `verify.js` can't: a function
+  that exists but no longer does its job.
 - Use `console.error`/`console.warn` for problems only; routine
   `console.log` calls were removed. Tell the user with `DW.showToast`.
 - Shared helpers in `namespace.js`: `DW.storage.get/set` (localStorage
@@ -60,6 +63,48 @@ gh api -H "Accept: application/vnd.github.raw" \
 
 Several functions were dropped or miswired during the split; they were
 restored on 2026-11-01 (see below).
+
+---
+
+## Browser tests (since 2026-11-04)
+
+`pytest browser_tests` runs the editor in headless Chromium (Playwright for
+Python, pinned in `requirements-browser.txt`). How to install and run them is
+in CONTRIBUTING.md. They are kept out of the plain `pytest` run
+(`testpaths = drawings` in `pytest.ini`) because they need the browser.
+
+- **Server.** `conftest.py` starts `manage.py serve` in a subprocess with
+  `DJANGO_DEBUG=false`, `DOCUWEAVER_REQUIRE_LOGIN=true` and a temporary
+  `DOCUWEAVER_DATA_DIR`, after `migrate` and `createsuperuser`. So the tests
+  see collected static files, WhiteNoise, Waitress and CSRF as a real install
+  does. The batch 1 CSRF bugs only showed under these settings.
+- **Known answers.** `drawing.py` builds the PDF (A3 at 1:500, nine valves, a
+  200 m scale bar) and the CSVs (WGS84 and MGA) from one table of valve
+  offsets in metres. Lat/lon comes from the WGS84 radii of curvature, not the
+  series the app uses. Pixel positions assume `RENDER_DPI = 150`, and the
+  upload test checks the rendered image size, so a DPI change fails loudly.
+- **Exact clicks.** `UI.show(x, y, zoom)` sets the viewport so canvas point
+  (x, y) sits on a whole screen pixel and returns it, so a click there picks
+  exactly (x, y). That is why the scale and Verify & Plot test can require
+  markers within 0.05 px of their valves after calibrating through the UI.
+  Tolerances elsewhere match what the app stores: the scale dialog rounds
+  the picked distance to 0.01 px, and metre adjustments are saved to the
+  millimetre.
+- **What fails a test.** Besides its assertions, a test fails on a console
+  error, a `pageerror`, a request to the server that fails or returns 4xx/5xx,
+  or an alert matching error/could not/failed/missing. Requests to other
+  hosts (map tiles) are ignored. Screenshots and the server log go to
+  `browser-test-artifacts/` (or `$BROWSER_TEST_ARTIFACTS`).
+- **Speed.** One server and one signed-in session for the whole run. Each
+  test makes its own project through the API (`UI.new_project`), so tests
+  don't depend on each other. Don't sign out in a test that uses the `ui`
+  fixture: it would end the shared session. `guest_ui` starts signed out.
+
+Checked 2026-11-04 against the released code: all 10 tests fail on v1.0.0,
+and 8 fail on v1.0.1 (sheet drag and split were fixed in 1.0.1). Each failure
+is for the bug it targets: mirrored MGA, stretched lat/lon, offset markers,
+the CSRF failures, Save Measurement, the missing export button and the
+import column matching.
 
 ---
 

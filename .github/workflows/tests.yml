@@ -40,6 +40,34 @@ jobs:
       - name: Run tests
         run: pytest
 
+  browser:
+    # The editor in headless Chromium against `manage.py serve` (DEBUG off,
+    # sign-in on), with a drawing whose asset positions are known.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-browser.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps --only-shell chromium
+
+      - name: Run browser tests
+        run: pytest browser_tests
+
+      - name: Upload screenshots and server log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-artifacts
+          path: browser-test-artifacts/
+
   docker:
     runs-on: ubuntu-latest
     steps:
