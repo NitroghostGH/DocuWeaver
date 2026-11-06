@@ -481,13 +481,14 @@
     // ==================== Export ====================
 
     /**
-     * Download every sheet as one PDF with the asset markers drawn on the
-     * original pages (server side, at the positions the editor shows).
+     * Download the shown sheets as one PDF, built on the server from the
+     * original pages as the editor shows them: cuts, PDF layers, links,
+     * asset markers and saved measurements.
      */
     async function exportComposedPdf(button) {
         if (button) button.disabled = true;
         try {
-            var response = await fetch('/api/projects/' + PROJECT_ID + '/export/');
+            var response = await fetch('/api/projects/' + PROJECT_ID + '/export/' + exportQuery());
             if (!response.ok) {
                 throw new Error(await DW.responseError(response));
             }
@@ -507,6 +508,25 @@
         } finally {
             if (button) button.disabled = false;
         }
+    }
+
+    /**
+     * The eyes kept only in this browser (sections and import batches), so
+     * the export leaves out what's hidden here. Item and folder eyes are
+     * saved, and the server reads those itself.
+     */
+    function exportQuery() {
+        var sections = state.hiddenSections || {};
+        var hide = ['sheets', 'assets', 'links', 'measurements'].filter(function(name) {
+            return sections.unified || sections[name] || (name === 'links' && state.linksVisible === false);
+        });
+        var batches = Object.keys(state.hiddenBatches || {}).filter(function(id) {
+            return state.hiddenBatches[id] && /^\d+$/.test(id);
+        });
+        var params = [];
+        if (hide.length) params.push('hide=' + hide.join(','));
+        if (batches.length) params.push('hidden_batches=' + batches.join(','));
+        return params.length ? '?' + params.join('&') : '';
     }
 
     /** The filename in a Content-Disposition header (RFC 6266), or null. */

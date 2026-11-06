@@ -7,7 +7,15 @@ All notable changes to DocuWeaver are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- "Drawings with Assets (PDF)" now exports each sheet as the editor shows it:
+  - **Cuts** are applied, to markups and form fields on the page too. A marker on a cut-away part is left out, and lines stop at the cut.
+  - **PDF layers** you turned off for a sheet are off in the export, even when another sheet of the same PDF shows them. A PDF reader's layer panel can turn them back on.
+  - **Links and saved measurements** are drawn on top. Each measurement is labelled with its name and length.
+- `/api/projects/<id>/export/` takes `?hide=` (any of `sheets`, `assets`, `links`, `measurements`) and `?hidden_batches=` (import batch ids). The editor keeps those eyes only in the browser, so the export button sends them and the PDF leaves out what is hidden on screen.
 - Browser tests (`pytest browser_tests`, Playwright) that drive the editor against a real server with sign-in on, using a drawing whose asset positions are known. CI runs them on every push.
+
+### Fixed
+- The composed PDF was several times larger than it needed to be when several sheets came from one PDF, because each sheet copied that PDF's fonts and images again. A three-page drawing set with a 4 MB embedded font exported at 13.0 MB; it is now 4.3 MB.
 
 ## [1.1.0] - 2026-11-04
 

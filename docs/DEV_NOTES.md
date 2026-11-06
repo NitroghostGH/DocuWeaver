@@ -346,8 +346,8 @@ Links and the OSM basemap go through the same two functions
   `assetMeterToPixel`; a marker's canvas position is mapped back through
   the sheet's offset and rotation and the 150 DPI render scale.
   `_PageSpace` works around PyMuPDF ignoring the crop box for shapes on
-  rotated, cropped pages. It doesn't yet apply PDF layer choices or cuts,
-  or draw links and measurements.
+  rotated, cropped pages. Cuts, PDF layers, links and measurements were
+  added on 2026-11-05; see "Composed PDF export" below.
 - **Files are deleted with their rows**, after the transaction commits, by
   the `post_delete` receiver `delete_sheet_files` in `drawings/models.py`
   (cascades don't call `Sheet.delete()`). A PDF shared by several sheets is
@@ -371,6 +371,71 @@ Verified 2026-11-03 with a Playwright script (headless Chromium, sign-in on,
 each item above, including hue and label colours in dark mode, stacking
 across three reloads, saved eyes and folders, undo, measurements, the scale
 tool, unit labels, Fit, the PDF download, 1280×720 and a 390 px phone.
+
+---
+
+## Composed PDF export (since 2026-11-05)
+
+`export_project_pdf` in `drawings/services/export_service.py` builds one PDF
+from the original pages, showing what the editor shows. Each sheet's page is
+copied with `insert_pdf`, then drawn on in the editor's default stacking
+order: links, asset markers, measurements. A custom order chosen in the
+rendering-hierarchy dialog isn't followed.
+
+- **What's left out.** The same rule as `isItemShown`. The item and folder
+  eyes are read from the database. The section and import-batch eyes exist
+  only in the browser, so `exportQuery()` in `imports.js` sends them as
+  `?hide=` and `?hidden_batches=`.
+- **Cuts.** `cut_polygon` is a port of `computeMultiCutPolygon` in
+  `crop.js`, including its rounding (`Math.round`, so halves round up) and
+  "no polygon means show the whole sheet". Cut points are in the image's
+  own pixels, measured from its centre. The polygon becomes a clip path
+  (`q … W n` … `Q`) in streams *added* around the page's content. The
+  copied streams are never edited, because two sheets of one page share
+  them: a split makes exactly that pair, cut on opposite sides.
+  `page.wrap_contents()` first balances the page's own `q`/`Q`, so the clip
+  ends where it should.
+  - Lines (links, measurements) are drawn in clipped streams.
+  - Markers and labels aren't clipped. A marker whose centre isn't shown
+    (off the page or cut away) is skipped instead, so labels don't get cut
+    in half.
+  - If a cut sheet's page has annotations or form fields, `bake()` turns
+    them into page content first, so the clip covers them. Uncut sheets
+    keep their annotations.
+- **PDF layers.** `insert_pdf` copies a page's optional content groups but
+  not the document's `/OCProperties`, so every layer would show.
+  1. When a source PDF is opened, each of its OCGs is tagged with
+     `/DocuWeaverShown true|false`. The value follows the same rule as
+     `_with_layers` in `pdf_processor.py`: the sheet's `visible_layers`
+     when it has a choice, otherwise the PDF's own default.
+  2. Once every page is in, `_set_layers` writes `/OCProperties` (`/ON`,
+     `/OFF`, `/Order`) from the tags and removes them.
+  3. Sources are cached by (file, layer choice), so sheets that show
+     different layers of one PDF get separate copies of its OCGs, and each
+     page keeps its own choice.
+  4. The output is saved with `garbage=2`, not 3. Level 3 merges identical
+     objects, and once the tags are gone the copies are identical.
+- **Shared objects.** `insert_pdf(..., final=False)` keeps PyMuPDF's map of
+  objects already copied from a source. Without it, every sheet copied the
+  PDF's fonts and images again: three sheets of a PDF with a 4 MB font came
+  to 13.0 MB instead of 4.3 MB. Garbage collection can't undo that, because
+  merging streams needs `garbage=4`.
+- **Measurements** are drawn as in `renderSaved` (dashed, 2 px, a dot at
+  each point). Each also gets a label, which the editor doesn't have: its
+  name and length (`formatDistance`, from the points and the current
+  scale). The label sits above the middle of the longest segment, moved
+  out along the normal far enough that the text box clears the line at any
+  angle. A measurement usually ends on an asset, whose own label would
+  collide with one placed at the ends.
+- **Tests.**
+  - `ExportCutsAndLinesTests` and `ExportPdfLayersTests` in
+    `drawings/tests.py` check colours at known points of rendered exports.
+    They cover a cut and a flipped cut, two sheets of one page with
+    opposite cuts, a rotated and cropped page, annotations, each eye, layer
+    choices per sheet and object sharing.
+  - `test_pdf_export_shows_cuts_links_measurements_and_section_eyes` in
+    `browser_tests/` makes the cut with the crop tool and turns off a
+    section eye in the sidebar, then checks the downloaded PDF.
 
 ---
 

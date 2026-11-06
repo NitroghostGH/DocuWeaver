@@ -41,6 +41,7 @@ from .serializers import (
 )
 from .services.csv_importer import import_assets_from_csv, import_links_from_csv
 from .services.export_service import (
+    EXPORT_SECTIONS,
     ExportError,
     download_name,
     export_project_pdf,
@@ -310,20 +311,34 @@ def import_csv(request, project_pk):
 
 @api_view(['GET'])
 def export_project(request, project_pk):
-    """Download the project's sheets with asset markers as one PDF.
+    """Download the project's sheets with links, asset markers and
+    measurements as one PDF.
 
-    ``?sheets=3,5`` limits it to those sheets. Hidden sheets and assets are
-    left out (see export_project_pdf).
+    ``?sheets=3,5`` limits it to those sheets. Hidden items are left out
+    (see export_project_pdf), and so are the eyes the editor keeps per
+    browser: ``?hide=links,measurements`` (any of sheets, assets, links,
+    measurements) and ``?hidden_batches=2,7`` (import batch ids).
     """
     project = get_object_or_404(Project, pk=project_pk)
-    sheet_ids = None
-    if request.query_params.get('sheets'):
-        try:
-            sheet_ids = {int(v) for v in request.query_params['sheets'].split(',') if v.strip()}
-        except ValueError:
-            return Response({'error': 'sheets must be a comma-separated list of sheet ids'}, status=400)
+    params = request.query_params
+
+    def id_list(name):
+        return {int(v) for v in params[name].split(',') if v.strip()} if params.get(name) else None
+
     try:
-        pdf = export_project_pdf(project, sheet_ids)
+        sheet_ids = id_list('sheets')
+    except ValueError:
+        return Response({'error': 'sheets must be a comma-separated list of sheet ids'}, status=400)
+    try:
+        hidden_batches = id_list('hidden_batches') or set()
+    except ValueError:
+        return Response({'error': 'hidden_batches must be a comma-separated list of import batch ids'}, status=400)
+    hide = {v.strip() for v in params.get('hide', '').split(',') if v.strip()}
+    if not hide <= set(EXPORT_SECTIONS):
+        return Response({'error': f"hide takes a comma-separated list of: {', '.join(EXPORT_SECTIONS)}"},
+                        status=400)
+    try:
+        pdf = export_project_pdf(project, sheet_ids, hide=hide, hidden_batches=hidden_batches)
     except ExportError as e:
         return Response({'error': str(e)}, status=400)
     logger.info("Exported project %d as PDF (%d bytes)", project_pk, len(pdf))

@@ -214,6 +214,95 @@ def test_composed_pdf_export_draws_each_marker_on_its_valve(ui, tmp_path):
         assert not missing, f'no marker drawn on the valve for {missing}'
 
 
+def _export_pdf(page, tmp_path, name):
+    with page.expect_download(timeout=60000) as download:
+        page.click('button:has-text("Drawings with Assets (PDF)")')
+    path = tmp_path / name
+    download.value.save_as(path)
+    return pymupdf.open(path)
+
+
+def _colour_near(pix, point_pt, match, radius=3):
+    """Whether any pixel within `radius` pixels of a point (PDF pt) of a
+    page rendered at 144 DPI (2 px per pt) matches."""
+    cx, cy = (round(v * 2) for v in point_pt)
+    return any(match(*pix.pixel(x, y))
+               for x in range(cx - radius, cx + radius + 1)
+               for y in range(cy - radius, cy + radius + 1)
+               if 0 <= x < pix.width and 0 <= y < pix.height)
+
+
+def _drawing_blue(r, g, b):
+    # The drawing's thin blue lines, anti-aliased against white
+    return b - r > 60 and b - g > 40
+
+
+def _link_magenta(r, g, b):
+    return r > 200 and b > 200 and g < 80
+
+
+def test_pdf_export_shows_cuts_links_measurements_and_section_eyes(ui, tmp_path):
+    page = ui.page
+    project = ui.new_project('Export as shown', csv='mga')
+    pid, sheet_id = project['id'], project['sheet']
+    width, height = drawing.IMAGE_SIZE
+    # A link from V1 to V6 in MGA metres, and a measurement from V1 to V3
+    # in canvas pixels
+    ui.api('POST', f'/api/projects/{pid}/links/', json_body={
+        'link_id': 'MAIN', 'name': 'Main', 'coordinates': [list(drawing.mga('V1')), list(drawing.mga('V6'))],
+        'color': '#FF00FF', 'width': 6}, expect=201)
+    (x1, y1), (x3, y3) = drawing.pixel('V1'), drawing.pixel('V3')
+    ui.api('POST', f'/api/projects/{pid}/measurement-sets/', json_body={
+        'name': 'Main check', 'measurement_type': 'single', 'color': '#00bcd4',
+        'points': [{'x': x1, 'y': y1}, {'x': x3, 'y': y3}]}, expect=201)
+    ui.open_editor(pid, markers=len(drawing.VALVES))
+
+    def link_at(t):
+        (ax, ay), (bx, by) = drawing.paper_pt('V1'), drawing.paper_pt('V6')
+        return ax + t * (bx - ax), ay + t * (by - ay)
+
+    def ring_below(asset_id):
+        x, y = drawing.paper_pt(asset_id)
+        return x, y + 2 * drawing.PT_PER_MM  # the drawn valve circle has a 2 mm radius
+
+    def markers_drawn(pdf_page):
+        filled = [d['rect'] for d in pdf_page.get_drawings() if d.get('fill') is not None]
+        return {a for a in drawing.VALVES
+                if any(abs((r.x0 + r.x1) / 2 - drawing.paper_pt(a)[0]) < 0.1
+                       and abs((r.y0 + r.y1) / 2 - drawing.paper_pt(a)[1]) < 0.1 for r in filled)}
+
+    # Everything shown, nothing cut
+    with _export_pdf(page, tmp_path, 'before.pdf') as doc:
+        pdf_page = doc[0]
+        pix = pdf_page.get_pixmap(dpi=144, alpha=False)
+        assert markers_drawn(pdf_page) == set(drawing.VALVES)
+        assert _colour_near(pix, ring_below('V6'), _drawing_blue)
+        assert _colour_near(pix, link_at(0.25), _link_magenta)
+        assert _colour_near(pix, link_at(0.95), _link_magenta)
+        expected = f'Main check: {drawing.metres_between("V1", "V3"):.2f} m'
+        assert expected in pdf_page.get_text(), pdf_page.get_text()
+
+    # Cut down the sheet at 300 mm across: V5 and V6 are on the far side
+    cut_x = 300 * drawing.PX_PER_MM
+    ui.show(width / 2, height / 2, zoom=0.4)
+    top, bottom = ui.screen(cut_x, 50), ui.screen(cut_x, height - 50)
+    ui.tool('crop')
+    with page.expect_response(_on_post(f'/api/sheets/{sheet_id}/', 'PATCH')):
+        ui.drag(top, bottom)
+    # Hide the measurements section: that eye is kept in the browser
+    page.uncheck('#measurements-group-vis')
+
+    with _export_pdf(page, tmp_path, 'after.pdf') as doc:
+        pdf_page = doc[0]
+        pix = pdf_page.get_pixmap(dpi=144, alpha=False)
+        assert markers_drawn(pdf_page) == set(drawing.VALVES) - {'V5', 'V6'}
+        assert not _colour_near(pix, ring_below('V6'), _drawing_blue), 'the cut-away part was exported'
+        assert _colour_near(pix, ring_below('V4'), _drawing_blue)
+        assert _colour_near(pix, link_at(0.25), _link_magenta)
+        assert not _colour_near(pix, link_at(0.95), _link_magenta), 'the link was drawn over the cut-away part'
+        assert 'Main check' not in pdf_page.get_text(), 'the hidden measurement was exported'
+
+
 def test_import_dialog_matches_gis_column_names_and_imports(ui):
     page = ui.page
     project = ui.new_project('Import dialog', csv=None)

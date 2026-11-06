@@ -17,6 +17,8 @@ from .models import (
     ColumnPreset,
     ImportBatch,
     LayerGroup,
+    Link,
+    MeasurementSet,
     Project,
     Sheet,
 )
@@ -1132,6 +1134,318 @@ class ExportProjectAPITests(TestCase):
         resp = self.client.get(f'/api/projects/{empty.pk}/export/')
         self.assertEqual(resp.status_code, 400)
         self.assertIn('no visible sheets', resp.json()['error'])
+
+
+def filled_pdf(*pages):
+    """A PDF with one page per (width, height, rotation, cropbox or None),
+    each filled green so that what a cut removes shows up white."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    for width, height, rotation, cropbox in pages:
+        page = doc.new_page(width=width, height=height)
+        page.draw_rect(page.rect, color=None, fill=(0, 0.6, 0))
+        if cropbox:
+            page.set_cropbox(pymupdf.Rect(*cropbox))
+        page.set_rotation(rotation)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def colour_at(page, x, y, dpi=144):
+    """(r, g, b) of the rendered page at a displayed point (PDF points)."""
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    return pix.pixel(int(x * dpi / 72), int(y * dpi / 72))
+
+
+def is_green(r, g, b):
+    return g > 120 and r < 60 and b < 60
+
+
+def is_white(r, g, b):
+    return min(r, g, b) > 235
+
+
+@override_settings(REQUIRE_LOGIN=False)
+class ExportCutsAndLinesTests(TestCase):
+    """The export cuts sheets, and draws links and saved measurements, as the
+    editor shows them.
+
+    Known answer: 10 px/m, reference asset R (hidden) at (0, 0) drawn at
+    canvas (100, 100). Sheet S is a green 400 x 300 pt page at (0, 0), so a
+    canvas pixel is an image pixel and 0.48 pt. Its image is 834 x 625 px.
+    - Asset IN at (10, -20) m: canvas (200, 300), PDF (96, 144) pt.
+    - Asset OUT at (60, -20) m: canvas (700, 300), PDF (336, 144) pt.
+    - Link L1 from (-5, -40) to (70, -40) m: canvas y 500, x 50 to 800;
+      PDF y 240 pt, x 24 to 384 pt.
+    - Measurement "Pipe run" from canvas (100, 400) to (400, 400): 300 px,
+      so 30 m; PDF (48, 192) to (192, 192) pt.
+    - The cut is a line in the image's own coordinates, from its centre:
+      x = 100 is image pixel 517, PDF x 248.16 pt. It keeps the centre's
+      side (the left); flipped, the right.
+    """
+
+    CUT = [{'p1': {'x': 100, 'y': -400}, 'p2': {'x': 100, 'y': 400}, 'flipped': False}]
+
+    def setUp(self):
+        self.client = APIClient()
+        p = self.project = create_project(
+            name='Cuts', coord_unit='meters', pixels_per_meter=10, scale_calibrated=True,
+            ref_asset_id='R', ref_pixel_x=100, ref_pixel_y=100)
+        self.pdf = filled_pdf((400, 300, 0, None), (400, 600, 90, (30, 40, 380, 560)))
+        self.sheet = Sheet.objects.create(project=p, name='S', page_number=1, image_width=834,
+                                          image_height=625, pdf_file=SimpleUploadedFile('s.pdf', self.pdf))
+        red = create_asset_type(name='Valve', color='#FF0000', size=20)
+        Asset.objects.create(project=p, asset_type=red, asset_id='R', original_x=0, original_y=0, visible=False)
+        self.inside = Asset.objects.create(project=p, asset_type=red, asset_id='IN', original_x=10, original_y=-20)
+        Asset.objects.create(project=p, asset_type=red, asset_id='OUT', original_x=60, original_y=-20)
+        self.link = Link.objects.create(project=p, link_id='L1', coordinates=[[-5, -40], [70, -40]],
+                                        color='#0000FF', width=4)
+        self.measurement = MeasurementSet.objects.create(
+            project=p, name='Pipe run', points=[{'x': 100, 'y': 400}, {'x': 400, 'y': 400}], color='#FF00FF')
+
+    def export(self, query=''):
+        import pymupdf
+
+        resp = self.client.get(f'/api/projects/{self.project.pk}/export/{query}')
+        self.assertEqual(resp.status_code, 200, getattr(resp, 'content', b''))
+        return pymupdf.open(stream=b''.join(resp.streaming_content), filetype='pdf')
+
+    def cut(self, sheet, flipped=False):
+        sheet.cuts_json = [{**self.CUT[0], 'flipped': flipped}]
+        sheet.save(update_fields=['cuts_json'])
+
+    def test_everything_drawn_without_cuts(self):
+        page = self.export()[0]
+        self.assertTrue(is_green(*colour_at(page, 100, 150)))
+        self.assertTrue(is_green(*colour_at(page, 350, 150)))
+        self.assertTrue(is_red(*colour_at(page, 96, 144)))
+        self.assertTrue(is_red(*colour_at(page, 336, 144)))
+        self.assertTrue(is_blue(*colour_at(page, 150, 240)))   # a level line (a flat bounding box)
+        self.assertTrue(is_blue(*colour_at(page, 300, 240)))
+        self.assertEqual(colour_at(page, 192, 192), (255, 0, 255))  # the measurement's end point
+        text = page.get_text()
+        self.assertIn('Pipe run: 30.00 m', text)
+        self.assertIn('IN', text)
+        self.assertIn('OUT', text)
+
+    def test_a_cut_removes_that_part_of_the_page_and_what_is_drawn_on_it(self):
+        self.cut(self.sheet)
+        page = self.export()[0]
+        self.assertTrue(is_green(*colour_at(page, 100, 150)))
+        self.assertTrue(is_white(*colour_at(page, 350, 150)))
+        self.assertTrue(is_green(*colour_at(page, 245, 150)))  # the cut is at 248.16
+        self.assertTrue(is_white(*colour_at(page, 251, 150)))
+        self.assertTrue(is_red(*colour_at(page, 96, 144)))
+        self.assertTrue(is_white(*colour_at(page, 336, 144)))
+        self.assertNotIn('OUT', page.get_text())
+        self.assertTrue(is_blue(*colour_at(page, 150, 240)))
+        self.assertTrue(is_white(*colour_at(page, 300, 240)))
+
+    def test_a_flipped_cut_keeps_the_other_side(self):
+        self.cut(self.sheet, flipped=True)
+        page = self.export()[0]
+        self.assertTrue(is_white(*colour_at(page, 100, 150)))
+        self.assertTrue(is_green(*colour_at(page, 350, 150)))
+        self.assertTrue(is_white(*colour_at(page, 96, 144)))
+        self.assertTrue(is_red(*colour_at(page, 336, 144)))
+        self.assertNotIn('IN\n', page.get_text())
+        self.assertNotIn('Pipe run', page.get_text())  # its last point is cut away
+
+    def test_two_sheets_of_one_page_keep_their_own_cuts(self):
+        # A split makes two sheets of the same PDF page, cut on opposite
+        # sides; the copied page's content is shared between them.
+        self.cut(self.sheet)
+        other = Sheet.objects.create(project=self.project, name='S2', page_number=1, offset_y=2000,
+                                     image_width=834, image_height=625, pdf_file=self.sheet.pdf_file.name)
+        self.cut(other, flipped=True)
+        doc = self.export()
+        self.assertEqual(len(doc), 2)
+        self.assertTrue(is_green(*colour_at(doc[0], 100, 150)))
+        self.assertTrue(is_white(*colour_at(doc[0], 350, 150)))
+        self.assertTrue(is_white(*colour_at(doc[1], 100, 150)))
+        self.assertTrue(is_green(*colour_at(doc[1], 350, 150)))
+
+    def test_a_cut_on_a_rotated_and_cropped_page(self):
+        # Page 2 has /Rotate 90 and a CropBox: shown 520 x 350 pt, an image
+        # of 1084 x 730 px, so the cut at x = 100 is pixel 642, 308.16 pt.
+        sheet = Sheet.objects.create(project=self.project, name='Rotated', page_number=2,
+                                     cuts_json=self.CUT, pdf_file=self.sheet.pdf_file.name)
+        page = self.export(f'?sheets={sheet.pk}')[0]
+        self.assertEqual(tuple(page.rect), (0, 0, 520, 350))
+        self.assertTrue(is_green(*colour_at(page, 150, 175)))
+        self.assertTrue(is_green(*colour_at(page, 305, 175)))
+        self.assertTrue(is_white(*colour_at(page, 311, 175)))
+        self.assertTrue(is_white(*colour_at(page, 450, 175)))
+
+    def test_a_cut_hides_annotations_on_the_cut_away_part(self):
+        import pymupdf
+
+        src = pymupdf.open(stream=self.pdf, filetype='pdf')
+        markup = src[0].add_rect_annot(pymupdf.Rect(300, 100, 380, 180))
+        markup.set_colors(stroke=(0, 0, 1), fill=(0, 0, 1))
+        markup.update()
+        sheet = Sheet.objects.create(project=self.project, name='Marked up', page_number=1,
+                                     pdf_file=SimpleUploadedFile('marked.pdf', src.tobytes()))
+        page = self.export(f'?sheets={sheet.pk}')[0]
+        self.assertTrue(is_blue(*colour_at(page, 340, 140)))
+        self.assertEqual(len(list(page.annots())), 1)  # left as an annotation without a cut
+        self.cut(sheet)
+        page = self.export(f'?sheets={sheet.pk}')[0]
+        self.assertTrue(is_white(*colour_at(page, 340, 140)))
+
+    def test_cuts_that_leave_nothing_show_the_whole_sheet(self):
+        # As in the editor (applyAllCuts)
+        # Keep x <= 100, then (flipped) x >= 200
+        self.sheet.cuts_json = [self.CUT[0], {'p1': {'x': 200, 'y': -400}, 'p2': {'x': 200, 'y': 400},
+                                              'flipped': True}]
+        self.sheet.save(update_fields=['cuts_json'])
+        page = self.export()[0]
+        self.assertTrue(is_green(*colour_at(page, 100, 150)))
+        self.assertTrue(is_green(*colour_at(page, 350, 150)))
+
+    def test_sections_hidden_in_the_editor_are_left_out(self):
+        page = self.export('?hide=links,measurements')[0]
+        self.assertTrue(is_red(*colour_at(page, 96, 144)))
+        self.assertTrue(is_green(*colour_at(page, 150, 240)))
+        self.assertNotEqual(colour_at(page, 192, 192), (255, 0, 255))
+        self.assertNotIn('Pipe run', page.get_text())
+        page = self.export('?hide=assets')[0]
+        self.assertTrue(is_green(*colour_at(page, 96, 144)))
+        self.assertTrue(is_blue(*colour_at(page, 150, 240)))
+
+    def test_hidden_import_batches_are_left_out(self):
+        batch = ImportBatch.objects.create(project=self.project, filename='valves.csv')
+        Asset.objects.filter(pk=self.inside.pk).update(import_batch=batch)
+        Link.objects.filter(pk=self.link.pk).update(import_batch=batch)
+        page = self.export(f'?hidden_batches={batch.pk}')[0]
+        self.assertTrue(is_green(*colour_at(page, 96, 144)))
+        self.assertTrue(is_red(*colour_at(page, 336, 144)))
+        self.assertTrue(is_green(*colour_at(page, 150, 240)))
+
+    def test_hidden_links_and_measurements_are_left_out(self):
+        Link.objects.filter(pk=self.link.pk).update(visible=False)
+        folder = LayerGroup.objects.create(project=self.project, name='Off', group_type='measurement',
+                                           visible=False)
+        MeasurementSet.objects.filter(pk=self.measurement.pk).update(layer_group=folder)
+        page = self.export()[0]
+        self.assertTrue(is_green(*colour_at(page, 150, 240)))
+        self.assertNotIn('Pipe run', page.get_text())
+
+    def test_links_need_the_reference_point_but_measurements_do_not(self):
+        # Measurements are saved in canvas pixels, links in coordinates
+        Project.objects.filter(pk=self.project.pk).update(ref_asset_id='')
+        page = self.export()[0]
+        self.assertTrue(is_green(*colour_at(page, 150, 240)))
+        self.assertTrue(is_green(*colour_at(page, 96, 144)))
+        self.assertIn('Pipe run: 30.00 m', page.get_text())
+
+    def test_measurement_length_in_pixels_without_a_scale(self):
+        Project.objects.filter(pk=self.project.pk).update(scale_calibrated=False)
+        self.assertIn('Pipe run: 300 px', self.export()[0].get_text())
+
+    def test_bad_query_values(self):
+        url = f'/api/projects/{self.project.pk}/export/'
+        self.assertEqual(self.client.get(url + '?hide=assets,bogus').status_code, 400)
+        self.assertEqual(self.client.get(url + '?hidden_batches=x').status_code, 400)
+        resp = self.client.get(url + '?hide=sheets')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('no visible sheets', resp.json()['error'])
+
+
+@override_settings(REQUIRE_LOGIN=False)
+class ExportPdfLayersTests(TestCase):
+    """The export shows the PDF layers each sheet shows in the editor."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = create_project(name='Layers')
+        upload, self.red, self.blue = make_layered_pdf()
+        self.layers = [{'xref': self.red, 'name': 'RED'}, {'xref': self.blue, 'name': 'BLUE'}]
+        self.first = Sheet.objects.create(project=self.project, name='Red only', page_number=1,
+                                          pdf_layers=self.layers, visible_layers=[self.red], pdf_file=upload)
+
+    def sheet(self, name, visible_layers, z_index):
+        return Sheet.objects.create(project=self.project, name=name, page_number=1, z_index=z_index,
+                                    pdf_layers=self.layers, visible_layers=visible_layers,
+                                    pdf_file=self.first.pdf_file.name)
+
+    def export(self):
+        import pymupdf
+
+        resp = self.client.get(f'/api/projects/{self.project.pk}/export/')
+        self.assertEqual(resp.status_code, 200)
+        data = b''.join(resp.streaming_content)
+        return pymupdf.open(stream=data, filetype='pdf'), data
+
+    def squares(self, page):
+        return is_red(*colour_at(page, 50, 50)), is_blue(*colour_at(page, 150, 150))
+
+    def test_each_sheet_keeps_its_own_layer_choice(self):
+        self.sheet('All', [], 1)
+        self.sheet('None', [0], 2)  # the editor's "all off"
+        doc, data = self.export()
+        self.assertEqual([self.squares(page) for page in doc], [(True, False), (True, True), (False, False)])
+        # Readers can turn them back on: each page's layers are listed
+        self.assertEqual(sorted(info['name'] for info in doc.get_ocgs().values()),
+                         ['BLUE', 'BLUE', 'BLUE', 'RED', 'RED', 'RED'])
+        self.assertNotIn(b'DocuWeaverShown', data)
+
+    def test_sheets_with_the_same_choice_share_one_copy(self):
+        self.sheet('Red again', [self.red], 1)
+        doc, _ = self.export()
+        self.assertEqual([self.squares(page) for page in doc], [(True, False), (True, False)])
+        self.assertEqual(len(doc.get_ocgs()), 2)
+
+    def test_without_a_choice_the_pdfs_own_settings_apply(self):
+        import pymupdf
+
+        src = pymupdf.open()
+        page = src.new_page(width=200, height=200)
+        off = src.add_ocg('OFF BY DEFAULT', on=False)
+        page.draw_rect(pymupdf.Rect(10, 10, 90, 90), color=(1, 0, 0), fill=(1, 0, 0), oc=off)
+        page.draw_rect(pymupdf.Rect(110, 110, 190, 190), color=(0, 0, 1), fill=(0, 0, 1))
+        Sheet.objects.filter(pk=self.first.pk).update(visible=False)
+        Sheet.objects.create(project=self.project, name='Default', page_number=1,
+                             pdf_file=SimpleUploadedFile('default.pdf', src.tobytes()))
+        doc, _ = self.export()
+        self.assertEqual(self.squares(doc[0]), (False, True))
+
+    def test_sheets_of_one_pdf_share_its_images_and_fonts(self):
+        # Each sheet used to copy them again: three sheets, three copies.
+        import random
+
+        import pymupdf
+
+        Sheet.objects.filter(pk=self.first.pk).update(visible=False)
+        rng = random.Random(1)
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 300, 300), False)
+        pix.set_rect(pix.irect, (0, 0, 0))
+        noise = bytes(rng.randrange(256) for _ in range(len(pix.samples)))
+        image = pymupdf.Pixmap(pymupdf.csRGB, 300, 300, noise, False).tobytes('png')
+        src = pymupdf.open()
+        xref = 0
+        for _ in range(3):
+            page = src.new_page(width=200, height=200)
+            xref = page.insert_image(pymupdf.Rect(0, 0, 200, 200), stream=image, xref=xref)
+        data = src.tobytes(garbage=4, deflate=True)
+        first = Sheet.objects.create(project=self.project, name='Page 1', page_number=1,
+                                     pdf_file=SimpleUploadedFile('set.pdf', data))
+        for number in (2, 3):
+            Sheet.objects.create(project=self.project, name=f'Page {number}', page_number=number,
+                                 pdf_file=first.pdf_file.name)
+        doc, exported = self.export()
+        self.assertEqual(len(doc), 3)
+        self.assertLess(len(exported), 1.2 * len(data))
+
+    def test_a_pdf_without_layers_gets_no_layer_settings(self):
+        Sheet.objects.filter(pk=self.first.pk).update(visible=False)
+        Sheet.objects.create(project=self.project, name='Plain', page_number=1,
+                             pdf_file=SimpleUploadedFile('plain.pdf', filled_pdf((200, 200, 0, None))))
+        doc, data = self.export()
+        self.assertEqual(doc.get_ocgs(), {})
+        self.assertNotIn(b'OCProperties', data)
 
 
 # ---------------------------------------------------------------------------
